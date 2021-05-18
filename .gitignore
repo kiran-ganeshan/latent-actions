@@ -1,2 +1,3 @@
 __pycache__/
 tmp/
+flax_vae/results/
