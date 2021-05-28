@@ -3,3 +3,4 @@ tmp/
 flax_vae/results/
 *.swp
 .vscode/
+wandb/
