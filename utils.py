@@ -6,6 +6,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 from skimage import data, color
 import io
+import wandb
 
 matplotlib.use('agg')
 
@@ -25,32 +26,40 @@ def get_datasets(binarized=True):
     return train, test
 
 
-def one_hot(label):
-    return (label[..., None] == jnp.arange(10)[None]).astype(jnp.float32)
+def one_hot(label, num_labels=10):
+    return (label[..., None] == jnp.arange(num_labels)[None]).astype(jnp.float32)
 
 
-def write_summary(summary_writer, metrics, rng, epochs, train=False, images=False):
-    scalar_keys = metrics.keys() - ['image', 'output', 'label', 'generated']
-    for key in scalar_keys:
-        metric_str = key + "/" + ("train" if train else "test")
-        summary_writer.scalar(metric_str, metrics[key], epochs)
-    if train:
-        summary_str = str()
-        for key in scalar_keys:
-            summary_str += "{0}: {1}, ".format(key, metrics[key])
-        print(summary_str[:-2])
-    if images:
-        print(metrics['image'][0, ...].min(), metrics['image'][0, ...].max())
-        print(metrics['output'][0, ...].min(), metrics['output'][0, ...].max())
-        img_str = "images/" + ("train/" if train else "test/")
-        data = (metrics['image'], metrics['output'], metrics['label'])
-        grid = image_grid(5, *data, False, False)
-        summary_writer.image(img_str + "sample", grid, epochs)
-        grid = image_grid(5, *data, False, True)
-        summary_writer.image(img_str + "worst", grid, epochs)
-    if images and 'generated' in metrics.keys():
-        grid = image_grid(5, *data, generated=metrics['generated'])
+def write_summary(summary_writer, metrics, rng, epochs, train=False):
+    wandb_metrics = dict()
+    for metric, value in metrics.items():
+        metric_str = metric + "/" + ("train" if train else "test")
+        wandb_metric_str = ("train" if train else "test") + "_" + metric
+        summary_writer.scalar(metric_str, value, epochs)
+        wandb_metrics[wandb_metric_str] = value
+    #wandb.log(wandb_metrics)
+    summary_str = "Train Results\t" if train else "Test Results\t"
+    for metric, value in metrics.items():
+        summary_str += "{0}: {1}, ".format(metric, value)
+    print(summary_str[:-2])
+
+def write_data(summary_writer, data, rng, epochs, train=False):
+    img_str = "images/" + ("train/" if train else "test/")
+    wandb_img_str = "train_" if train else "test_"
+    wandb_metrics = dict()
+    test_data = (data['image'], data['output'], data['label'])
+    grid = image_grid(5, *test_data, False, False)
+    summary_writer.image(img_str + "sample", grid, epochs)
+    wandb_metrics[wandb_img_str + "sample"] = wandb.Image(grid)
+    grid = image_grid(5, *test_data, False, True)
+    summary_writer.image(img_str + "worst", grid, epochs)
+    wandb_metrics[wandb_img_str + "worst"] = wandb.Image(grid)
+    if 'generated' in data.keys():
+        test_data = (data['image'], data['output'], data['generated_label'])
+        grid = image_grid(5, *test_data, generated=data['generated'])
         summary_writer.image(img_str + "generated", grid, epochs)
+        wandb_metrics[wandb_img_str + "generated"] = wandb.Image(grid)
+    #wandb.log(wandb_metrics)
 
 def plot_to_image(figure):
     """Converts the matplotlib plot specified by 'figure' to a PNG image and
@@ -90,16 +99,14 @@ def image_grid(n : int,
         axes = tuple(range(1, len(output.shape)))
         diff = np.sum((output - image) * (output - image), axis=axes)
         worst_image_it = np.argsort(diff)[-n*n:]
-    figure = plt.figure(figsize=(4 * n, 4 * n))
+    figure = plt.figure(figsize=(1.6 * n, 1.6 * n))
     use_worst = worst and generated is None
     for (i, index) in enumerate(worst_image_it if use_worst else range(n * n)):
         # Start next subplot.
         if feed_forward and generated is None:
             title = "Predicted: {0}\nActual: {1}".format(output[index], label[index])
-        elif generated is None:
-            title = "Label: {}".format(label[index])
         else:
-            title = "Generated"
+            title = "Label: {}".format(label[index])
         plt.subplot(n, n, i + 1, title=title)
         plt.xticks([])
         plt.yticks([])
