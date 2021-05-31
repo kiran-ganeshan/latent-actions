@@ -30,7 +30,7 @@ def one_hot(label, num_labels=10):
     return (label[..., None] == jnp.arange(num_labels)[None]).astype(jnp.float32)
 
 
-def write_summary(summary_writer, metrics, rng, epochs, train=False):
+def write_summary(summary_writer, metrics, epochs, train=False, leave=True):
     wandb_metrics = dict()
     for metric, value in metrics.items():
         metric_str = metric + "/" + ("train" if train else "test")
@@ -41,9 +41,10 @@ def write_summary(summary_writer, metrics, rng, epochs, train=False):
     summary_str = "Train Results\t" if train else "Test Results\t"
     for metric, value in metrics.items():
         summary_str += "{0}: {1}, ".format(metric, value)
-    print(summary_str[:-2])
+    end = '\n' if leave else '\r'
+    print(summary_str[:-2], end=end)
 
-def write_data(summary_writer, data, rng, epochs, train=False):
+def write_data(summary_writer, data, epochs, train=False):
     img_str = "images/" + ("train/" if train else "test/")
     wandb_img_str = "train_" if train else "test_"
     wandb_metrics = dict()
