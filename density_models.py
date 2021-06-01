@@ -22,20 +22,21 @@ import datetime
 from typing import Sequence
 from utils import get_datasets, write_summary, write_data
 from optax import adam
+import matplotlib.pyplot as plt
 import wandb
 
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string('save_dir', './tmp/', 'Tensorboard logging dir.')
-flags.DEFINE_integer('test_interval', 2, 'Testing interval (epochs).')
+flags.DEFINE_integer('test_interval', 5, 'Testing interval (epochs).')
 flags.DEFINE_integer('latent_dim', 10, 'Dimension of latent space.')
 flags.DEFINE_integer('num_values', 10, 'Number of values for categorical latent variables.')
-flags.DEFINE_integer('embedding_dim', 3, 'Dimension of embedding space.')
-flags.DEFINE_integer('epochs', 20, 'Number of epochs.')
+flags.DEFINE_integer('embedding_dim', 2, 'Dimension of embedding space.')
+flags.DEFINE_integer('epochs', 5, 'Number of epochs.')
 flags.DEFINE_integer('prng_key', 0, 'Psuedorandom generator key.')
 flags.DEFINE_integer('batch_size', 60, 'Batch size.')
 flags.DEFINE_integer('temp_interval', 2, 'Temperature update interval (epochs).')
-flags.DEFINE_float('learning_rate', 1e-4, 'Learning rate.')
+flags.DEFINE_float('learning_rate', 3e-5, 'Learning rate.')
 flags.DEFINE_float('max_temp', 0.5, 'Maximum temperature.')
 flags.DEFINE_float('temp_rate', 0.1, 'Rate of temperature decrease (per epoch).')
 flags.DEFINE_float('beta1', 0.5, 'First Adam parameter.')
@@ -83,7 +84,6 @@ class MADETrainState:
         new_state = self.made_state.apply_gradients(grads=grads)
         return MADETrainState(made_state=new_state, epoch=self.epoch)
         
-
 
 @dataclass
 class VAETrainState:
@@ -156,15 +156,11 @@ class GSVAETrainState(VAETrainState):
 @dataclass
 class VQVAETrainState(VAETrainState):
     vq_state : TrainState
-    encodings : jnp.array
-    latent_dim : int
-    num_values : int
     
     @classmethod
     def create(cls, enc_module, enc_params, enc_optim,
                dec_module, dec_params, dec_optim, 
-               vq_module, vq_params, vq_optim, 
-               latent_dim, num_values):
+               vq_module, vq_params, vq_optim):
         vae_train_state = VAETrainState.create(enc_module, enc_params, enc_optim,
                                                dec_module, dec_params, dec_optim)
         vq_state = TrainState.create(apply_fn=vq_module.apply,
@@ -174,32 +170,21 @@ class VQVAETrainState(VAETrainState):
         return VQVAETrainState(enc_state=vae_train_state.enc_state,
                                dec_state=vae_train_state.dec_state,
                                vq_state=vq_state, 
-                               encodings=jnp.array([]).reshape((0, latent_dim, num_values)), 
-                               latent_dim=latent_dim, 
-                               num_values=num_values, 
                                epoch=0)
 
     def next_epoch(self):
-        no_encodings = jnp.array([]).reshape((0, self.latent_dim, self.num_values))
         return VQVAETrainState(enc_state=self.enc_state, 
                                dec_state=self.dec_state, 
                                vq_state=self.vq_state,
-                               encodings=no_encodings,
-                               latent_dim=self.latent_dim,
-                               num_values=self.num_values,
                                epoch=self.epoch + 1)
     
-    def apply_gradients(self, enc_grads, dec_grads, vq_grads, encodings):
+    def apply_gradients(self, enc_grads, dec_grads, vq_grads):
         enc_state = self.enc_state.apply_gradients(grads=enc_grads)
         dec_state = self.dec_state.apply_gradients(grads=dec_grads)
         vq_state = self.vq_state.apply_gradients(grads=vq_grads)
-        encodings = jnp.concatenate([self.encodings, encodings], 0)
         return VQVAETrainState(enc_state=enc_state, 
                                dec_state=dec_state, 
                                vq_state=vq_state, 
-                               encodings=encodings,
-                               latent_dim=self.latent_dim,
-                               num_values=self.num_values,
                                epoch=self.epoch)
     
     
@@ -257,7 +242,7 @@ class MLP(nn.Module):
     def mlp(self, x):
         for size in self.hidden_sizes:
             x = nn.relu(nn.Dense(features=size)(x))
-        x = nn.Dense(features=self.output_size)(x)
+        x = nn.Dense(features=self.output_size, kernel_init=zeros)(x)
         return x
     
     
@@ -355,8 +340,51 @@ class Quantizer(nn.Module):
         x = x.reshape((*input_shape, self.embedding_dim))
         e_latent_loss = jnp.mean((lax.stop_gradient(quantized) - x)**2)
         q_latent_loss = jnp.mean((quantized - lax.stop_gradient(x))**2)
-        loss = q_latent_loss #+ self.commitment_cost * e_latent_loss
+        loss = q_latent_loss + self.commitment_cost * e_latent_loss
         quantized = x + lax.stop_gradient(quantized - x)
+        avg_probs = jnp.mean(enc, 0)
+        perplexity = jnp.exp(-jnp.sum(avg_probs * jnp.log(avg_probs + 1e-10)))
+        aux = {
+            'loss': loss,
+            'encoding': enc,
+            'encoding_index': enc_idx,
+            'avg_probs': avg_probs,
+            'perplexity': perplexity
+        }
+        return quantized, aux
+    
+    
+class KMeansQuantizer(nn.Module):
+    embedding_dim : int = 10
+    num_embeddings : int = 10
+    commitment_cost : float = 0.25
+    momentum : float = 0.9
+
+    @nn.compact
+    def __call__(self, x, train=True):
+        input_shape = x.shape[:-1]
+        x = x.reshape((-1, self.embedding_dim))
+        embeddings = self.variable('embedding_vars', 'embeddings', 
+                                   variance_scaling(1.0, 'fan_in', 'uniform'),
+                                   (self.embedding_dim, self.num_embeddings))
+        cluster_size = self.variable('embedding_vars', 'cluster_size', zeros, (self.num_embeddings,))
+        unnormalized = self.variable('embedding_vars', 'unnormalized_embeds', zeros, 
+                                     (self.embedding_dim, self.num_embeddings))
+        e, cs, un = embeddings.value, cluster_size.value, unnormalized.value
+        dist = jnp.sum(x * x, 1, keepdims=True) + jnp.sum(e * e, 0, keepdims=True) - 2 * x @ e
+        enc_idx = jnp.argmax(-dist, 1)
+        enc = one_hot(enc_idx, self.num_embeddings)
+        quantized = jax.device_put(e.T)[(enc_idx.reshape(input_shape),)]
+        e_latent_loss = jnp.mean((jax.lax.stop_gradient(quantized) - x)**2)
+        if train:
+            cluster_size.value = (1 - self.momentum) * jnp.sum(enc, axis=0) + self.momentum * cs
+            unnormalized.value = (1 - self.momentum) * x.T @ enc + self.momentum * un
+            n = jnp.sum(cluster_size.value)
+            stable_cs = ((cluster_size.value + self.epsilon) /
+                         (n + self.num_embeddings * self.epsilon) * n)
+            embeddings.value = unnormalized.value / stable_cs.reshape((1, -1))
+        loss = self.commitment_cost * e_latent_loss
+        quantized = x + jax.lax.stop_gradient(quantized - x)
         avg_probs = jnp.mean(enc, 0)
         perplexity = jnp.exp(-jnp.sum(avg_probs * jnp.log(avg_probs + 1e-10)))
         aux = {
@@ -567,10 +595,13 @@ class MADELearner:
     learning_rate : float = 1e-4
     beta1 : float = 0.9
     beta2 : float = 0.5
+    hidden_sizes : Sequence[int] = (latent_dim,)
     
     #@partial(jit, static_argnums=0)
     def initial_state(self, rng):
-        made = MaskedMLP(latent_dim=self.latent_dim, num_values=self.num_values)
+        made = MaskedMLP(latent_dim=self.latent_dim, 
+                         num_values=self.num_values,
+                         hidden_sizes=self.hidden_sizes)
         params = made.init(rng, jnp.ones((10, self.latent_dim, self.num_values), jnp.float32))
         optim = adam(self.learning_rate, self.beta1, self.beta2)
         return MADETrainState.create(made, params, optim)
@@ -652,22 +683,18 @@ class VQVAELearner(VAELearner):
         dec_params = decoder.init(dec_rng, jnp.ones((10, self.latent_dim, self.embedding_dim), jnp.float32))
         vq_params = quantizer.init(vq_rng, jnp.ones((10, self.latent_dim, self.embedding_dim), jnp.float32))
         make_optim = lambda: adam(self.learning_rate, self.beta1, self.beta2)
-        print(self.latent_dim)
         return VQVAETrainState.create(encoder, enc_params, make_optim(),
                                       decoder, dec_params, make_optim(),
-                                      quantizer, vq_params, make_optim(),
-                                      self.latent_dim, self.num_values)
+                                      quantizer, vq_params, make_optim())
 
     def compute_loss(self, train_state, enc_params, dec_params, vq_params, 
                      rng, inputs, labels, train=True):
         latents = train_state.enc_state.apply_fn(enc_params, inputs)
         latents = latents.reshape((-1, self.latent_dim, self.embedding_dim))
         codes, vq_aux = train_state.vq_state.apply_fn(vq_params, latents)
-        #codes = latents
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
         aux = {'image': inputs, 'label': labels, 'output': jnp.exp(reconst)}
         return bce_loss(inputs, reconst), vq_aux.pop('loss'), {**aux, **vq_aux}
-        #return bce_loss(inputs, reconst), 0, aux
     
     @partial(jit, static_argnums=0)
     def train_step(self, train_state, rng, inputs, labels, train=True):
@@ -677,7 +704,7 @@ class VQVAELearner(VAELearner):
             metrics = {'loss': reconst_loss + self.beta * kl_penalty, 
                        'reconst_loss': reconst_loss, 
                        'penalty_kl_loss': kl_penalty,
-                       'encoding': aux['encoding']}
+                       'perplexity': aux.pop('perplexity')}
             return reconst_loss + self.beta * kl_penalty, metrics
         
         step_rng, rng = random.split(rng)
@@ -686,11 +713,9 @@ class VQVAELearner(VAELearner):
                                                                   train_state.dec_state.params, 
                                                                   train_state.vq_state.params, 
                                                                   step_rng)
-        enc = stats['encoding'].reshape((-1, self.latent_dim, self.num_values))
-        metric_names = ['loss', 'reconst_loss', 'penalty_kl_loss']
-        stats = {name: stats[name] for name in metric_names}
-        new_train_state = train_state.apply_gradients(enc_grads=e_grads, dec_grads=d_grads, 
-                                                      vq_grads=q_grads, encodings=enc)
+        new_train_state = train_state.apply_gradients(enc_grads=e_grads, 
+                                                      dec_grads=d_grads, 
+                                                      vq_grads=q_grads)
         return new_train_state, rng, stats
 
     def make_made(self):
@@ -707,7 +732,7 @@ class VQVAELearner(VAELearner):
     def generate(self, train_state, made_train_state, rng):
         samples = self.make_made().generate(made_train_state, rng)
         embeddings = train_state.vq_state.params['params']['embeddings']
-        idx = jnp.argmax(samples.reshape((-1, self.latent_dim, self.embedding_dim)), -1)
+        idx = jnp.argmax(samples.reshape((-1, self.latent_dim, self.num_values)), -1)
         quantized = jax.device_put(embeddings.T)[(idx,)]
         outputs = train_state.dec_state.apply_fn(train_state.dec_state.params, quantized)
         return jnp.exp(outputs), jnp.zeros((25,))
@@ -745,7 +770,9 @@ class VQVAELearner(VAELearner):
                                                           train_state.dec_state.params,
                                                           train_state.vq_state.params,
                                                           loss_rng, inputs, labels)
-        made_state = self.train_made(train_state.encodings, made_rng, self.made_epochs)
+        encodings = train_state.enc_state.apply_fn(train_state.enc_state.params, inputs)
+        encodings = encodings.reshape((-1, self.latent_dim, self.num_values))
+        made_state = self.train_made(encodings, made_rng, self.made_epochs)
         generated, gen_labels = self.generate(train_state, made_state, generate_rng)
         metrics = {'loss': reconst_loss + kl_penalty, 
                    'reconst_loss': reconst_loss, 
@@ -793,13 +820,14 @@ def main():
         epoch_metrics_np = {metric: np.mean([metrics[metric] for metrics in batch_metrics_np])
                             for metric in batch_metrics_np[0]}
         write_summary(summary_writer, epoch_metrics_np, epoch, True)
-        if epoch % test_interval == 0 or epoch == epochs - 1:
+        if (epoch + 1) % test_interval == 0 or epoch == epochs - 1:
             rng, eval_rng = random.split(rng)
             eval_metrics, eval_data = coder.evaluate(state, eval_rng, test['image'], test['label'])
             eval_metrics_np, eval_data_np = jax.device_get(eval_metrics), jax.device_get(eval_data)
             write_summary(summary_writer, eval_metrics_np, epoch, False)
             write_data(summary_writer, eval_data_np, epoch, False)
         state = state.next_epoch()
+    
         
     #wandb.finish()
 

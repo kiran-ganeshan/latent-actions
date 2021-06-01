@@ -60,7 +60,11 @@ def write_data(summary_writer, data, epochs, train=False):
         grid = image_grid(5, *test_data, generated=data['generated'])
         summary_writer.image(img_str + "generated", grid, epochs)
         wandb_metrics[wandb_img_str + "generated"] = wandb.Image(grid)
-    #wandb.log(wandb_metrics)
+    if 'avg_probs' in data.keys():
+        hist = histogram(data['avg_probs'])
+        summary_writer.image(img_str + "avg_probs", hist, epochs)
+        wandb_metrics[wandb_img_str + "avg_probs"] = wandb.Image(hist)
+    wandb.log(wandb_metrics)
 
 def plot_to_image(figure):
     """Converts the matplotlib plot specified by 'figure' to a PNG image and
@@ -120,3 +124,16 @@ def image_grid(n : int,
             im = generated
         plt.imshow(im[index, ...], cmap=plt.cm.binary)
     return plot_to_image(figure)
+
+def histogram(densities):
+    densities = densities.reshape((-1, densities.shape[-1]))
+    n = np.ceil(np.sqrt(densities.shape[0])).astype(np.intc)
+    figure = plt.figure(figsize=(1.6 * n, 1.6 * n))
+    for i in range(densities.shape[0]):
+        plt.subplot(n, n, i + 1, title="Latent {}".format(i))
+        plt.xticks([])
+        plt.grid(False)
+        plt.hist(densities[i, :], bins=range(densities.shape[1] + 1), range=(0, 1))
+    return plot_to_image(figure)
+    
+    
