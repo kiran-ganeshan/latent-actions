@@ -537,7 +537,7 @@ class GSVAELearner(VAELearner):
         codes = lax.cond(train, train_sample, test_sample, logprobs)
         codes = codes.reshape((codes.shape[0], -1))
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
-        reconst = reconst.reshape((-1, *self.image_size))
+        reconst = reconst.reshape((-1, *self.image_shape))
         aux = {'image': inputs, 'label': labels, 'output': jnp.exp(reconst)}
         return bce_loss(inputs, reconst), 0, aux
 
@@ -549,7 +549,7 @@ class GSVAELearner(VAELearner):
         labels = random.randint(rng, (25,), 0, 10)
         dec_params = train_state.dec_state.params
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
-        reconst = reconst.reshape((-1, *self.image_size))
+        reconst = reconst.reshape((-1, *self.image_shape))
         return reconst, labels
 
 
