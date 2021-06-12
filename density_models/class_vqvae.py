@@ -4,6 +4,7 @@ from models import VQVAELearner, train
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string('save_dir', './tmp/', 'Tensorboard logging dir.')
+flags.DEFINE_bool('ema_vq', False, 'Whether to use EMA quantizer.')
 flags.DEFINE_integer('test_interval', 5, 'Testing interval (epochs).')
 flags.DEFINE_integer('latent_dim', 10, 'Dimension of latent space.')
 flags.DEFINE_integer('num_values', 10, 'Number of values for categorical latent variables.')
@@ -29,6 +30,7 @@ flags.DEFINE_float('made_beta2', 0.5, 'Second Adam param for MADE.')
 flags.DEFINE_float('beta', 0.5, 'KL loss term scaling factor.')
 flags.DEFINE_float('commitment_cost', 0.25, 'VQVAE Quantizer commitment cost.')
 flags.DEFINE_float('made_coeff', 0.2, 'Importance of MADE in aggregate loss.')
+flags.DEFINE_float('vq_momentum', 0.9, 'Momentum of EMA quantizer.')
  
 wandb.init()
 FLAGS(sys.argv)
@@ -53,7 +55,8 @@ coder = VQVAELearner(num_enc_layers=FLAGS.num_enc_layers,
                      made_batch=FLAGS.made_batch,
                      made_num_layers=FLAGS.made_num_layers,
                      made_hidden_size=FLAGS.made_hidden_size,
-                     ema_vq=False)
+                     ema_vq=FLAGS.ema_vq,
+                     vq_momentum=FLAGS.vq_momentum)
 train(coder, 
       FLAGS.epochs, 
       FLAGS.batch_size, 

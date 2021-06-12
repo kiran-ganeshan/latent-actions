@@ -497,7 +497,7 @@ class ClassVAELearner(VAELearner):
         codes = concat_labels(codes, labels, self.num_classes)
         dec_params = train_state.dec_state.params
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
-        reconst = reconst.reshape((-1, *self.image_size))
+        reconst = reconst.reshape((-1, *self.image_shape))
         return reconst, labels
 
 
@@ -530,7 +530,7 @@ class GSVAELearner(VAELearner):
         
     def compute_loss(self, train_state, enc_params, dec_params, rng, inputs, labels, train=True):
         logprobs = train_state.enc_state.apply_fn(enc_params, inputs)
-        logprobs = logprobs.reshape((-1, self.latent_dim. self.num_values))
+        logprobs = logprobs.reshape((-1, self.latent_dim, self.num_values))
         g = -jnp.log(-jnp.log(random.uniform(rng, logprobs.shape) + 1e-20) + 1e-20)
         train_sample = lambda x: nn.softmax((x + g)/train_state.temp, axis=-1)
         test_sample = lambda x: one_hot(jnp.argmax(x, axis=-1), self.num_values)

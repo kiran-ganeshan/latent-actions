@@ -53,7 +53,8 @@ coder = VQVAELearner(num_enc_layers=FLAGS.num_enc_layers,
                      made_batch=FLAGS.made_batch,
                      made_num_layers=FLAGS.made_num_layers,
                      made_hidden_size=FLAGS.made_hidden_size,
-                     ema_vq=FLAGS.ema_vq)
+                     ema_vq=FLAGS.ema_vq,
+                     vq_momentum=FLAGS.vq_momentum)
 train(coder, 
       FLAGS.epochs, 
       FLAGS.batch_size, 
