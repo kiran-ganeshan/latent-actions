@@ -1,0 +1,37 @@
+project: latent-actions
+program: class_made.py
+command:
+  - ${env}
+  - python3
+  - ${program}
+  - "--test_interval"
+  - 5
+  - "--epochs"
+  - 20
+  - "--batch_size"
+  - 60
+  - ${args}
+method: bayes
+metric:
+  name: test_loss
+  goal: minimize
+parameters:
+  learning_rate:
+    min: 0.000001
+    max: 0.001
+  beta1: 
+    min: 0.7
+    max: 0.999
+  beta2:
+    min: 0.3
+    max: 0.7
+  seed:
+    min: 0
+    max: 1000000
+  num_layers:
+    min: 2
+    max: 5
+  hidden_size:
+    min: 1
+    max: 4
+

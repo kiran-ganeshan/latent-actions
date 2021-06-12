@@ -1,0 +1,72 @@
+project: latent-actions
+program: class_vqvae.py
+command:
+  - ${env}
+  - python3
+  - ${program}
+  - "--test_interval"
+  - 5
+  - "--epochs"
+  - 20
+  - "--batch_size"
+  - 60
+  - "--embedding_dim"
+  - 2
+  - ${args}
+method: bayes
+metric:
+  name: test_loss
+  goal: minimize
+parameters:
+  learning_rate:
+    min: 0.000001
+    max: 0.001
+  beta1: 
+    min: 0.7
+    max: 0.999
+  beta2:
+    min: 0.3
+    max: 0.7
+  beta:
+    min: 0.1
+    max: 3
+  made_learning_rate:
+    min: 0.000001
+    max: 0.01
+  made_beta1:
+    min: 0.7
+    max: 0.999
+  made_beta2:
+    min: 0.3
+    max: 0.7
+  made_num_layers:
+    min: 2
+    max: 5
+  made_hidden_size:
+    min: 1
+    max: 3
+  commitment_cost:
+    min: 0.1
+    max: 2.0
+  latent_dim:
+    min: 2
+    max: 40
+  num_values:
+    min: 2
+    max: 40
+  seed:
+    min: 0
+    max: 1000000
+  num_enc_layers:
+    min: 1
+    max: 4
+  num_dec_layers:
+    min: 1
+    max: 4
+  enc_hidden_size:
+    min: 0.1
+    max: 2.0
+  dec_hidden_size:
+    min: 0.1
+    max: 2.0
+

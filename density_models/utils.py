@@ -1,14 +1,24 @@
-import jax
 from jax import numpy as jnp
 import tensorflow_datasets as tfds
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
-from skimage import data, color
-import io
 import wandb
 
 matplotlib.use('agg')
+
+def kl_loss(mu, log_sigma):
+    kl_exp = 1 + log_sigma - jnp.square(mu) - jnp.exp(log_sigma)
+    return -jnp.mean(jnp.sum(kl_exp, axis=-1))
+
+def bce_loss(inputs, outputs):
+    bce_exp = inputs * outputs + (1 - inputs) * jnp.log(-jnp.expm1(outputs) + 1e-20)
+    return -jnp.mean(jnp.sum(bce_exp, axis=(1, 2, 3)))
+
+def concat_labels(inputs, labels, num_classes=10):
+    inputs = inputs.reshape((inputs.shape[0], -1))
+    inputs = jnp.concatenate([inputs, one_hot(labels, num_classes)], axis=1)
+    return inputs
 
 def get_datasets(binarized=True):
     builder = tfds.builder('binarized_mnist' if binarized else 'mnist')
@@ -25,57 +35,19 @@ def get_datasets(binarized=True):
         test['image'] = test['image'] / 255.
     return train, test
 
-
 def one_hot(label, num_labels=10):
     return (label[..., None] == jnp.arange(num_labels)[None]).astype(jnp.float32)
-
-
-def write_summary(summary_writer, metrics, epochs, train=False, leave=True):
-    wandb_metrics = dict()
-    for metric, value in metrics.items():
-        metric_str = metric + "/" + ("train" if train else "test")
-        wandb_metric_str = ("train" if train else "test") + "_" + metric
-        summary_writer.scalar(metric_str, value, epochs)
-        wandb_metrics[wandb_metric_str] = value
-    #wandb.log(wandb_metrics)
-    summary_str = "Train Results\t" if train else "Test Results\t"
-    for metric, value in metrics.items():
-        summary_str += "{0}: {1}, ".format(metric, value)
-    end = '\n' if leave else '\r'
-    print(summary_str[:-2], end=end)
-
-def write_data(summary_writer, data, epochs, train=False):
-    img_str = "images/" + ("train/" if train else "test/")
-    wandb_img_str = "train_" if train else "test_"
-    wandb_metrics = dict()
-    test_data = (data['image'], data['output'], data['label'])
-    grid = image_grid(5, *test_data, False, False)
-    summary_writer.image(img_str + "sample", grid, epochs)
-    wandb_metrics[wandb_img_str + "sample"] = wandb.Image(grid)
-    grid = image_grid(5, *test_data, False, True)
-    summary_writer.image(img_str + "worst", grid, epochs)
-    wandb_metrics[wandb_img_str + "worst"] = wandb.Image(grid)
-    if 'generated' in data.keys():
-        test_data = (data['image'], data['output'], data['generated_label'])
-        grid = image_grid(5, *test_data, generated=data['generated'])
-        summary_writer.image(img_str + "generated", grid, epochs)
-        wandb_metrics[wandb_img_str + "generated"] = wandb.Image(grid)
-    if 'avg_probs' in data.keys():
-        hist = histogram(data['avg_probs'])
-        summary_writer.image(img_str + "avg_probs", hist, epochs)
-        wandb_metrics[wandb_img_str + "avg_probs"] = wandb.Image(hist)
-    wandb.log(wandb_metrics)
 
 def plot_to_image(figure):
     """Converts the matplotlib plot specified by 'figure' to a PNG image and
     returns it. The supplied figure is closed and inaccessible after this call."""
     width, height = figure.get_size_inches() * figure.get_dpi()
-    #figure.tight_layout()
+    figure.tight_layout()
     figure.canvas.draw()
     im = np.fromstring(figure.canvas.tostring_rgb(), dtype='uint8')
     im = im.reshape(int(height), int(width), 3)
     plt.close(figure)
-    return color.rgb2gray(im)
+    return im
 
 def image_grid(n : int, 
                image, 
@@ -131,9 +103,59 @@ def histogram(densities):
     figure = plt.figure(figsize=(1.6 * n, 1.6 * n))
     for i in range(densities.shape[0]):
         plt.subplot(n, n, i + 1, title="Latent {}".format(i))
-        plt.xticks([])
+        plt.ylim(0, 1)
         plt.grid(False)
-        plt.hist(densities[i, :], bins=range(densities.shape[1] + 1), range=(0, 1))
+        plt.bar(range(1, densities.shape[1] + 1), densities[i, :])
     return plot_to_image(figure)
-    
-    
+
+def scatter_plot(points, centers):
+    points = points.reshape((-1, 2))
+    centers = centers.reshape((-1, 2))
+    figure = plt.figure(figsize=(10, 10))
+    plt.scatter(points[:, 0], points[:, 1], s=5, c='red')
+    plt.scatter(centers[:, 0], centers[:, 1], s=50, c='blue')
+    return plot_to_image(figure)
+
+def write_summary(summary_writer, metrics, epochs, train=False, made_coeff=None):
+    wandb_metrics = dict()
+    if 'made_loss' in metrics and not made_coeff is None:
+        agg_metrics = {'loss': metrics['loss'] + metrics['made_loss']}
+        other_metrics = {metric: value for metric, value in metrics.items() if metric != 'loss'}
+        metrics = {**agg_metrics, **other_metrics}
+    for metric, value in metrics.items():
+        metric_str = metric + "/" + ("train" if train else "test")
+        wandb_metric_str = ("train" if train else "test") + "_" + metric
+        summary_writer.scalar(metric_str, value, epochs)
+        wandb_metrics[wandb_metric_str] = value
+    wandb.log(wandb_metrics)
+    summary_str = ("Train " if train else "Test ") + "Results\t"
+    for metric, value in metrics.items():
+        summary_str += "{0}: {1:.4f}, ".format(metric, value)
+    print(summary_str[:-2])
+
+def write_data(summary_writer, data, epochs, train=False):
+    img_str = "images/" + ("train/" if train else "test/")
+    wandb_img_str = "train_" if train else "test_"
+    wandb_metrics = dict()
+    test_data = (data['image'], data['output'], data['label'])
+    grid = image_grid(5, *test_data, False, False)
+    summary_writer.image(img_str + "sample", grid, epochs)
+    wandb_metrics[wandb_img_str + "sample"] = wandb.Image(grid)
+    grid = image_grid(5, *test_data, False, True)
+    summary_writer.image(img_str + "worst", grid, epochs)
+    wandb_metrics[wandb_img_str + "worst"] = wandb.Image(grid)
+    if 'generated' in data.keys():
+        test_data = (data['image'], data['output'], data['generated_label'])
+        grid = image_grid(5, *test_data, generated=data['generated'])
+        summary_writer.image(img_str + "generated", grid, epochs)
+        wandb_metrics[wandb_img_str + "generated"] = wandb.Image(grid)
+    if 'avg_probs' in data.keys():
+        hist = histogram(data['avg_probs'])
+        summary_writer.image(img_str + "avg_probs", hist, epochs)
+        wandb_metrics[wandb_img_str + "avg_probs"] = wandb.Image(hist)
+    if 'latents' in data.keys() and 'centers' in data.keys() and \
+                data['latents'].shape[-1] == 2 and data['centers'].shape[-1] == 2:
+        scatter = scatter_plot(data['latents'], data['centers'])
+        summary_writer.image(img_str + "embeddings", scatter, epochs)
+        wandb_metrics[wandb_img_str + "embeddings"] = wandb.Image(scatter)
+    wandb.log(wandb_metrics)

@@ -1,7 +1,7 @@
-from re import X
 import jax
+from jax.interpreters.xla import DeviceArray
 import numpy as np
-import os, sys
+import os
 from jax import numpy as jnp
 from flax import linen as nn
 from flax.training.train_state import TrainState
@@ -11,53 +11,16 @@ from jax.ops import index, index_update
 from jax.nn import one_hot
 from jax.nn.initializers import variance_scaling
 from tqdm import tqdm
-from absl import flags
 from flax.metrics.tensorboard import SummaryWriter
 from flax.linen.initializers import zeros
 from flax.core.frozen_dict import FrozenDict
 from flax.struct import dataclass
-from dataclasses import dataclass as py_dataclass
 from enum import Enum
 import datetime
-from typing import Sequence
+from typing import Callable, Sequence
 from utils import get_datasets, write_summary, write_data
+from utils import kl_loss, bce_loss, concat_labels
 from optax import adam
-import matplotlib.pyplot as plt
-import wandb
-
-
-FLAGS = flags.FLAGS
-flags.DEFINE_string('save_dir', './tmp/', 'Tensorboard logging dir.')
-flags.DEFINE_integer('test_interval', 5, 'Testing interval (epochs).')
-flags.DEFINE_integer('latent_dim', 10, 'Dimension of latent space.')
-flags.DEFINE_integer('num_values', 10, 'Number of values for categorical latent variables.')
-flags.DEFINE_integer('embedding_dim', 2, 'Dimension of embedding space.')
-flags.DEFINE_integer('epochs', 5, 'Number of epochs.')
-flags.DEFINE_integer('prng_key', 0, 'Psuedorandom generator key.')
-flags.DEFINE_integer('batch_size', 60, 'Batch size.')
-flags.DEFINE_integer('temp_interval', 2, 'Temperature update interval (epochs).')
-flags.DEFINE_float('learning_rate', 3e-5, 'Learning rate.')
-flags.DEFINE_float('max_temp', 0.5, 'Maximum temperature.')
-flags.DEFINE_float('temp_rate', 0.1, 'Rate of temperature decrease (per epoch).')
-flags.DEFINE_float('beta1', 0.5, 'First Adam parameter.')
-flags.DEFINE_float('beta2', 0.9, 'Second Adam parameter.')
-flags.DEFINE_float('beta', 0.5, 'KL loss term scaling factor.')
-flags.DEFINE_float('commitment_cost', 0.25, 'VQVAE Quantizer commitment cost.')
-flags.DEFINE_float('eps', 1e-20, 'Stability epsilon in jnp.log.')
-
-
-def kl_loss(mu, log_sigma):
-    kl_exp = 1 + log_sigma - jnp.square(mu) - jnp.exp(log_sigma)
-    return -jnp.mean(jnp.sum(kl_exp, axis=-1))
-
-def bce_loss(inputs, outputs):
-    bce_exp = inputs * outputs + (1 - inputs) * jnp.log(-jnp.expm1(outputs) + 1e-9)
-    return -jnp.mean(jnp.sum(bce_exp, axis=(1, 2, 3)))
-
-def concat_labels(inputs, labels):
-    inputs = inputs.reshape((inputs.shape[0], -1))
-    inputs = jnp.concatenate([inputs, one_hot(labels, 10)], axis=1)
-    return inputs
 
 
 class TrainState(TrainState):
@@ -121,6 +84,7 @@ class GSVAETrainState(VAETrainState):
     max_temp : float
     temp_rate : float
     
+    @classmethod
     def create(cls, enc_module, enc_params, enc_optim,
                dec_module, dec_params, dec_optim,
                temp_interval, max_temp, temp_rate):
@@ -233,6 +197,7 @@ class MLP(nn.Module):
     hidden_sizes : Sequence[int] = (100,)
     input_size : int = 784
     output_size : int = 10
+    activation : Callable[[DeviceArray], DeviceArray] = lambda x: x
 
     @nn.compact
     def __call__(self, x):
@@ -242,8 +207,20 @@ class MLP(nn.Module):
     def mlp(self, x):
         for size in self.hidden_sizes:
             x = nn.relu(nn.Dense(features=size)(x))
-        x = nn.Dense(features=self.output_size, kernel_init=zeros)(x)
+        x = nn.Dense(features=self.output_size)(x)
+        x = self.activation(x)
         return x
+    
+class Encoder(MLP):
+    
+    latent_dim : int = 10
+    
+    @nn.compact
+    def __call__(self, x):
+        x = self.mlp(x.reshape((-1, self.input_size)))
+        mu = nn.Dense(features=self.latent_dim, kernel_init=zeros)(x)
+        log_sigma = nn.Dense(features=self.latent_dim, kernel_init=zeros)(x)
+        return mu, log_sigma
     
     
 class MaskedMLP(nn.Module):
@@ -270,55 +247,40 @@ class MaskedMLP(nn.Module):
                         mask_type=MaskType.output,
                         use_bias=True)(x)
         x = x.reshape((-1, self.num_values, self.latent_dim)).swapaxes(1, 2)
-        x = nn.log_softmax(x + FLAGS.eps, axis=-1)
+        x = nn.log_softmax(x + 1e-20, axis=-1)
         return x
-
-
-class Decoder(MLP):
-    hidden_sizes : Sequence[int] = (100, 256)
-    input_size : int = 10
-    output_size : int = 784
-
+    
+    
+class ClassMaskedMLP(MaskedMLP):
+    
+    model_name : str = 'masked_mlp'
+    num_classes : int = 10
+    
     @nn.compact
-    def __call__(self, x):
-        x = self.mlp(x.reshape((-1, self.input_size)))
-        x = nn.log_sigmoid(x).reshape((-1, 28, 28, 1))
-        return x
-
-
-class Encoder(MLP):
-    latent_dim : int = 10
-    hidden_sizes : Sequence[int] = (256,)
-
-    @nn.compact
-    def __call__(self, x):
-        x = self.mlp(x.reshape((-1, self.input_size)))
-        mu = nn.Dense(self.latent_dim, kernel_init=zeros)(x)
-        log_sigma = nn.Dense(self.latent_dim, kernel_init=zeros)(x)
-        return mu, log_sigma
-
-
-class Classifier(MLP):
-    hidden_sizes : Sequence[int] = (256,)
-
-    @nn.compact
-    def __call__(self, x):
-        x = self.mlp(x.reshape((-1, self.input_size)))
-        return nn.softmax(x)
-
-
-class GSEncoder(MLP):
-    latent_dim : int = 10
-    latent_vars : int = 20
-    hidden_sizes : Sequence[int] = (256,)
-    input_size : int = 784
-    output_size : int = 100
-
-    @nn.compact
-    def __call__(self, x):
-        x = self.mlp(x.reshape((-1, self.input_size)))
-        x = nn.Dense(self.latent_dim * self.latent_vars, kernel_init=zeros)(x)
-        x = x.reshape((x.shape[0], self.latent_dim, self.latent_vars))
+    def __call__(self, x, y):
+        x = x.swapaxes(1, 2).reshape((-1, self.latent_dim * self.num_values))
+        y = y.reshape((-1, self.num_classes))
+        x = nn.relu(MaskedDense(features=self.hidden_sizes[0],
+                                latent_dim=self.latent_dim,
+                                mask_type=MaskType.input,
+                                use_bias=False)(x))
+        y = nn.relu(nn.Dense(features=self.hidden_sizes[0])(y))
+        x = x + y
+        for size in self.hidden_sizes[1:]:
+            x = nn.relu(MaskedDense(features=size,
+                                    latent_dim=self.latent_dim,
+                                    mask_type=MaskType.hidden,
+                                    use_bias=False)(x))
+            y = nn.relu(nn.Dense(features=size)(y))
+            x = x + y
+        x = MaskedDense(features=self.latent_dim * self.num_values,
+                        latent_dim=self.latent_dim,
+                        mask_type=MaskType.output,
+                        use_bias=True)(x)
+        y = nn.Dense(features=self.latent_dim * self.num_values)(y)
+        x = x + y
+        x = x.reshape((-1, self.num_values, self.latent_dim)).swapaxes(1, 2)
+        x = nn.log_softmax(x + 1e-20, axis=-1)
         return x
     
     
@@ -328,7 +290,7 @@ class Quantizer(nn.Module):
     commitment_cost : float = 0.25
 
     @nn.compact
-    def __call__(self, x):
+    def __call__(self, x, train=True):
         e = self.param('embeddings', variance_scaling(1.0, 'fan_in', 'uniform'),
                        (self.embedding_dim, self.num_embeddings))
         input_shape = x.shape[:-1]
@@ -342,14 +304,16 @@ class Quantizer(nn.Module):
         q_latent_loss = jnp.mean((quantized - lax.stop_gradient(x))**2)
         loss = q_latent_loss + self.commitment_cost * e_latent_loss
         quantized = x + lax.stop_gradient(quantized - x)
-        avg_probs = jnp.mean(enc, 0)
-        perplexity = jnp.exp(-jnp.sum(avg_probs * jnp.log(avg_probs + 1e-10)))
+        avg_probs = jnp.mean(enc.reshape((*input_shape, -1)), 0)
+        over_latents = jnp.mean(avg_probs, tuple(range(len(input_shape) - 1)))
+        perplexity = jnp.exp(-jnp.sum(over_latents * jnp.log(over_latents + 1e-20)))
         aux = {
             'loss': loss,
             'encoding': enc,
             'encoding_index': enc_idx,
             'avg_probs': avg_probs,
-            'perplexity': perplexity
+            'perplexity': perplexity,
+            'centers': e.T
         }
         return quantized, aux
     
@@ -365,34 +329,44 @@ class KMeansQuantizer(nn.Module):
         input_shape = x.shape[:-1]
         x = x.reshape((-1, self.embedding_dim))
         embeddings = self.variable('embedding_vars', 'embeddings', 
-                                   variance_scaling(1.0, 'fan_in', 'uniform'),
+                                   lambda s: variance_scaling(1.0, 'fan_in', 'uniform')(
+                                       self.make_rng('params'), s),
                                    (self.embedding_dim, self.num_embeddings))
-        cluster_size = self.variable('embedding_vars', 'cluster_size', zeros, (self.num_embeddings,))
-        unnormalized = self.variable('embedding_vars', 'unnormalized_embeds', zeros, 
-                                     (self.embedding_dim, self.num_embeddings))
+        cluster_size = self.variable('embedding_vars', 'cluster_size', 
+                                     lambda s: jnp.zeros(s), (self.num_embeddings,))
+        unnormalized = self.variable('embedding_vars', 'unnormalized_embeds', 
+                                     lambda s: jnp.zeros(s), (self.embedding_dim, self.num_embeddings))
         e, cs, un = embeddings.value, cluster_size.value, unnormalized.value
         dist = jnp.sum(x * x, 1, keepdims=True) + jnp.sum(e * e, 0, keepdims=True) - 2 * x @ e
         enc_idx = jnp.argmax(-dist, 1)
         enc = one_hot(enc_idx, self.num_embeddings)
         quantized = jax.device_put(e.T)[(enc_idx.reshape(input_shape),)]
-        e_latent_loss = jnp.mean((jax.lax.stop_gradient(quantized) - x)**2)
-        if train:
-            cluster_size.value = (1 - self.momentum) * jnp.sum(enc, axis=0) + self.momentum * cs
-            unnormalized.value = (1 - self.momentum) * x.T @ enc + self.momentum * un
-            n = jnp.sum(cluster_size.value)
-            stable_cs = ((cluster_size.value + self.epsilon) /
-                         (n + self.num_embeddings * self.epsilon) * n)
-            embeddings.value = unnormalized.value / stable_cs.reshape((1, -1))
-        loss = self.commitment_cost * e_latent_loss
+        def update(_):
+            new_cs = (1 - self.momentum) * jnp.sum(enc, axis=0) + self.momentum * cs
+            new_un = (1 - self.momentum) * x.T @ enc + self.momentum * un
+            n = jnp.sum(new_cs)
+            stable_cs = (new_cs + 1e-20) / (n + self.num_embeddings * 1e-20) * n
+            new_e = new_un / stable_cs.reshape((1, -1))
+            return new_e, new_cs, new_un
+        initializing = self.is_mutable_collection('params')
+        no_update = lambda _: (e, cs, un)
+        new_e, new_cs, new_un = lax.cond(train, update, no_update, None)
+        update = lambda _: (new_e, new_cs, new_un)
+        new_e, new_cs, new_un = lax.cond(initializing, no_update, update, None)
+        embeddings.value, cluster_size.value, unnormalized.value = new_e, new_cs, new_un
+        x = x.reshape((*input_shape, self.embedding_dim))
+        loss = self.commitment_cost * jnp.mean((jax.lax.stop_gradient(quantized) - x)**2)
         quantized = x + jax.lax.stop_gradient(quantized - x)
-        avg_probs = jnp.mean(enc, 0)
-        perplexity = jnp.exp(-jnp.sum(avg_probs * jnp.log(avg_probs + 1e-10)))
+        avg_probs = jnp.mean(enc.reshape((*input_shape, -1)), 0)
+        over_latents = jnp.mean(avg_probs, tuple(range(len(input_shape) - 1)))
+        perplexity = jnp.exp(-jnp.sum(over_latents * jnp.log(over_latents + 1e-20)))
         aux = {
             'loss': loss,
             'encoding': enc,
             'encoding_index': enc_idx,
             'avg_probs': avg_probs,
-            'perplexity': perplexity
+            'perplexity': perplexity,
+            'centers': embeddings.value.T
         }
         return quantized, aux
 
@@ -405,6 +379,10 @@ class VAELearner:
     beta1 : float = 0.5
     beta2 : float = 0.9
     beta : float = 0.5
+    num_enc_layers : int = 2
+    num_dec_layers : int = 2
+    enc_hidden_size : float = 0.5
+    dec_hidden_size : float = 0.5
     num_classes : int = 10
     image_size : int = 784
     image_shape : Sequence[int] = (28, 28, 1)
@@ -412,26 +390,36 @@ class VAELearner:
     @partial(jit, static_argnums=0)
     def initial_state(self, rng):
         enc_rng, dec_rng = random.split(rng)
-        encoder = Encoder(latent_dim=self.latent_dim)
-        decoder = Decoder(input_size=self.latent_dim)
+        enc_hidden_size = int(np.floor(self.enc_hidden_size * self.image_size))
+        dec_hidden_size = int(np.floor(self.dec_hidden_size * self.image_size))
+        encoder = Encoder(input_size=self.image_size, 
+                          hidden_sizes=(self.num_enc_layers - 1) * (enc_hidden_size,),
+                          output_size=self.image_size,
+                          latent_dim=self.latent_dim)
+        decoder = MLP(input_size=self.latent_dim, 
+                      hidden_sizes=(self.num_dec_layers - 1) * (dec_hidden_size,),
+                      output_size=self.image_size,
+                      activation=nn.log_sigmoid)
         enc_params = encoder.init(enc_rng, jnp.ones((10,) + self.image_shape, jnp.float32))
         dec_params = decoder.init(dec_rng, jnp.ones((10, self.latent_dim), jnp.float32))
         make_optim = lambda: adam(self.learning_rate, self.beta1, self.beta2)
-        return VAETrainState.create(encoder, enc_params, make_optim(), decoder, dec_params, make_optim())
+        return VAETrainState.create(encoder, enc_params, make_optim(), 
+                                    decoder, dec_params, make_optim())
         
     def compute_loss(self, train_state, enc_params, dec_params, rng, inputs, labels, train=True):
         mu, log_sigma = train_state.enc_state.apply_fn(enc_params, inputs)
         r = random.normal(rng, (mu.shape[0], self.latent_dim))
         codes = mu + r * jnp.exp(log_sigma)
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
+        reconst = reconst.reshape((-1, *self.image_shape))
         aux = {'image': inputs, 'label': labels, 'output': jnp.exp(reconst)}
         return bce_loss(inputs, reconst), kl_loss(mu, log_sigma), aux
 
     @partial(jit, static_argnums=0)
-    def train_step(self, train_state, rng, inputs, labels, train=True):
+    def train_step(self, train_state, rng, inputs, labels):
         def loss_fn(enc_params, dec_params, rng):
             reconst_loss, kl_penalty, aux = self.compute_loss(train_state, enc_params, dec_params, 
-                                                              rng, inputs, labels, train)
+                                                              rng, inputs, labels, True)
             metrics = {'loss': reconst_loss + kl_penalty, 
                        'reconst_loss': reconst_loss, 
                        'penalty_kl_loss': kl_penalty}
@@ -449,15 +437,16 @@ class VAELearner:
         codes = random.normal(rng, (25, self.latent_dim))
         dec_params = train_state.dec_state.params
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
-        return reconst, jnp.zeros((25,))
-                        #dummy labels so evaluate is compatible with classVAE
+        reconst = reconst.reshape((-1, *self.image_shape))
+        return reconst, jnp.zeros((25,)) # dummy labels so evaluate is compatible with classVAE
+                        
     @partial(jit, static_argnums=0)
     def evaluate(self, train_state, rng, inputs, labels):
         loss_rng, generate_rng = random.split(rng)
         reconst_loss, kl_penalty, aux = self.compute_loss(train_state,
                                                           train_state.enc_state.params, 
                                                           train_state.dec_state.params,
-                                                          loss_rng, inputs, labels)
+                                                          loss_rng, inputs, labels, False)
         generated, gen_labels = self.generate(train_state, generate_rng)
         metrics = {'loss': reconst_loss + self.beta * kl_penalty, 
                    'reconst_loss': reconst_loss, 
@@ -474,31 +463,41 @@ class ClassVAELearner(VAELearner):
     @partial(jit, static_argnums=0)
     def initial_state(self, rng):
         enc_rng, dec_rng = random.split(rng)
-        encoder = Encoder(latent_dim=self.latent_dim, input_size=self.image_size + self.num_classes)
-        decoder = Decoder(input_size=self.latent_dim + self.num_classes)
-        enc_params = encoder.init(enc_rng, jnp.ones((10, self.image_size), jnp.float32))
-        dec_params = decoder.init(dec_rng, jnp.ones((10, self.latent_dim + self.num_classes), jnp.float32))
+        enc_hidden_size = int(np.floor(self.enc_hidden_size * self.image_size))
+        dec_hidden_size = int(np.floor(self.dec_hidden_size * self.image_size))
+        encoder = Encoder(input_size=self.image_size, 
+                          hidden_sizes=(self.num_enc_layers - 1) * (enc_hidden_size,),
+                          output_size=self.image_size,
+                          latent_dim=self.latent_dim)
+        decoder = MLP(input_size=self.latent_dim + self.num_classes, 
+                      hidden_sizes=(self.num_dec_layers - 1) * (dec_hidden_size,),
+                      output_size=self.image_size,
+                      activation=nn.log_sigmoid)
+        enc_inputs = jnp.ones((10,) + self.image_shape, jnp.float32)
+        dec_inputs = jnp.ones((10, self.latent_dim + self.num_classes), jnp.float32)
+        enc_params, dec_params = encoder.init(enc_rng, enc_inputs), decoder.init(dec_rng, dec_inputs)
         make_optim = lambda: adam(self.learning_rate, self.beta1, self.beta2)
-        return VAETrainState.create(encoder, enc_params, make_optim(), decoder, dec_params, make_optim())
+        return VAETrainState.create(encoder, enc_params, make_optim(), 
+                                    decoder, dec_params, make_optim())
         
     def compute_loss(self, train_state, enc_params, dec_params, rng, inputs, labels, train=True):
-        inputs = concat_labels(inputs, labels)
         mu, log_sigma = train_state.enc_state.apply_fn(enc_params, inputs)
         r = random.normal(rng, (mu.shape[0], self.latent_dim))
         codes = mu + r * jnp.exp(log_sigma)
-        codes = concat_labels(codes, labels)
+        codes = concat_labels(codes, labels, self.num_classes)
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
-        inputs = inputs[:, :self.image_size].reshape((-1,) + self.image_shape)
+        reconst = reconst.reshape((-1, *self.image_shape))
         aux = {'image': inputs, 'label': labels, 'output': jnp.exp(reconst)}
-        return bce_loss(inputs, reconst), kl_loss(mu, log_sigma, self.beta), aux
+        return bce_loss(inputs, reconst), kl_loss(mu, log_sigma), aux
 
     @partial(jit, static_argnums=0)
     def generate(self, train_state, rng):
         codes = random.normal(rng, (25, self.latent_dim))
         labels = random.randint(rng, (25,), 0, 10)
-        codes = jnp.concatenate([codes, one_hot(labels, self.num_classes)], axis=1)
+        codes = concat_labels(codes, labels, self.num_classes)
         dec_params = train_state.dec_state.params
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
+        reconst = reconst.reshape((-1, *self.image_size))
         return reconst, labels
 
 
@@ -508,15 +507,22 @@ class GSVAELearner(VAELearner):
     max_temp : float = 0.5
     temp_rate : float = 0.1
     temp_interval : int = 2
-    latent_vars : int = 20
+    num_values : int = 10
 
     @partial(jit, static_argnums=0)
     def initial_state(self, rng):
         enc_rng, dec_rng = random.split(rng)
-        encoder = GSEncoder(latent_dim=self.latent_dim, latent_vars=self.latent_vars)
-        decoder = Decoder(input_size=self.latent_dim * self.latent_vars)
-        enc_params = encoder.init(enc_rng, jnp.ones((10, 784), jnp.float32))
-        dec_params = decoder.init(dec_rng, jnp.ones((10, self.latent_dim * self.latent_vars), jnp.float32))
+        enc_hidden_size = int(np.floor(self.enc_hidden_size * self.image_size))
+        dec_hidden_size = int(np.floor(self.dec_hidden_size * self.image_size))
+        encoder = MLP(input_size=self.image_size,
+                      hidden_sizes=(self.num_enc_layers - 1) * (enc_hidden_size,),
+                      output_size=self.latent_dim * self.num_values)
+        decoder = MLP(input_size=self.latent_dim * self.num_values, 
+                      hidden_sizes=(self.num_dec_layers - 1) * (dec_hidden_size,),
+                      output_size=self.image_size,
+                      activation=nn.log_sigmoid)
+        enc_params = encoder.init(enc_rng, jnp.ones((10, self.image_size), jnp.float32))
+        dec_params = decoder.init(dec_rng, jnp.ones((10, self.num_values * self.latent_dim), jnp.float32))
         make_optim = lambda: adam(self.learning_rate, self.beta1, self.beta2)
         return GSVAETrainState.create(encoder, enc_params, make_optim(),
                                       decoder, dec_params, make_optim(), 
@@ -524,23 +530,26 @@ class GSVAELearner(VAELearner):
         
     def compute_loss(self, train_state, enc_params, dec_params, rng, inputs, labels, train=True):
         logprobs = train_state.enc_state.apply_fn(enc_params, inputs)
-        g = -jnp.log(-jnp.log(random.uniform(rng, logprobs.shape) + FLAGS.eps) + FLAGS.eps)
-        train_sample = lambda x: nn.softmax((x + g)/train_state.temp, axis=1)
-        test_sample = lambda x: one_hot(jnp.argmax(x, axis=1), self.latent_dim).swapaxes(1, 2)
+        logprobs = logprobs.reshape((-1, self.latent_dim. self.num_values))
+        g = -jnp.log(-jnp.log(random.uniform(rng, logprobs.shape) + 1e-20) + 1e-20)
+        train_sample = lambda x: nn.softmax((x + g)/train_state.temp, axis=-1)
+        test_sample = lambda x: one_hot(jnp.argmax(x, axis=-1), self.num_values)
         codes = lax.cond(train, train_sample, test_sample, logprobs)
         codes = codes.reshape((codes.shape[0], -1))
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
+        reconst = reconst.reshape((-1, *self.image_size))
         aux = {'image': inputs, 'label': labels, 'output': jnp.exp(reconst)}
         return bce_loss(inputs, reconst), 0, aux
 
     # Not sure how to generate, will start by randomly sampling from latents but this def won't work
     @partial(jit, static_argnums=0)
     def generate(self, train_state, rng):
-        codes = random.randint(rng, (25, self.latent_vars), 0, self.latent_dim)
-        codes = one_hot(codes, self.latent_dim).reshape((codes.shape[0], -1))
+        codes = random.randint(rng, (25, self.latent_dim), 0, self.num_values)
+        codes = one_hot(codes, self.num_values).reshape((codes.shape[0], -1))
         labels = random.randint(rng, (25,), 0, 10)
         dec_params = train_state.dec_state.params
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
+        reconst = reconst.reshape((-1, *self.image_size))
         return reconst, labels
 
 
@@ -551,38 +560,45 @@ class ClassGSVAELearner(GSVAELearner):
     @partial(jit, static_argnums=0)
     def initial_state(self, rng):
         enc_rng, dec_rng = random.split(rng)
-        decoder_input_size = self.latent_dim * self.latent_vars + self.num_classes
-        encoder = GSEncoder(latent_dim=self.latent_dim, latent_vars=self.latent_vars,
-                            input_size=self.image_size + self.num_classes)
-        decoder = Decoder(input_size=decoder_input_size)
-        enc_params = encoder.init(enc_rng, jnp.ones((10, self.image_size + self.num_classes), jnp.float32))
-        dec_params = decoder.init(dec_rng, jnp.ones((10, decoder_input_size), jnp.float32))
+        dec_input_size = self.latent_dim * self.num_values + self.num_classes
+        enc_hidden_size = int(np.floor(self.enc_hidden_size * self.image_size))
+        dec_hidden_size = int(np.floor(self.dec_hidden_size * self.image_size))
+        encoder = MLP(input_size=self.image_size,
+                      hidden_sizes=(self.num_enc_layers - 1) * (enc_hidden_size,),
+                      output_size=self.latent_dim * self.num_values)
+        decoder = MLP(input_size=dec_input_size, 
+                      hidden_sizes=(self.num_dec_layers - 1) * (dec_hidden_size,),
+                      output_size=self.image_size,
+                      activation=nn.log_sigmoid)
+        enc_params = encoder.init(enc_rng, jnp.ones((10, self.image_size), jnp.float32))
+        dec_params = decoder.init(dec_rng, jnp.ones((10, dec_input_size), jnp.float32))
         make_optim = lambda: adam(self.learning_rate, self.beta1, self.beta2)
         return GSVAETrainState.create(encoder, enc_params, make_optim(),
                                       decoder, dec_params, make_optim(), 
                                       self.temp_interval, self.max_temp, self.temp_rate)
 
     def compute_loss(self, train_state, enc_params, dec_params, rng, inputs, labels, train=True):
-        inputs = concat_labels(inputs, labels)
         logprobs = train_state.enc_state.apply_fn(enc_params, inputs)
-        g = -jnp.log(-jnp.log(random.uniform(rng, logprobs.shape) + FLAGS.eps) + FLAGS.eps)
-        train_sample = lambda x: nn.softmax((x + g)/train_state.temp, axis=1)
-        test_sample = lambda x: one_hot(jnp.argmax(x, axis=1), self.latent_dim).swapaxes(1, 2)
+        logprobs = logprobs.reshape((-1, self.latent_dim, self.num_values))
+        g = -jnp.log(-jnp.log(random.uniform(rng, logprobs.shape) + 1e-20) + 1e-20)
+        train_sample = lambda x: nn.softmax((x + g)/train_state.temp, axis=-1)
+        test_sample = lambda x: one_hot(jnp.argmax(x, axis=-1), self.num_values)
         codes = lax.cond(train, train_sample, test_sample, logprobs)
-        codes = concat_labels(codes, labels)
+        codes = concat_labels(codes, labels, self.num_classes)
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
-        inputs = inputs[:, :self.image_size].reshape((-1,) + self.image_shape)
+        reconst = reconst.reshape((-1, *self.image_shape))
         aux = {'image': inputs, 'label': labels, 'output': jnp.exp(reconst)}
         return bce_loss(inputs, reconst), 0, aux
 
     @partial(jit, static_argnums=0)
     def generate(self, train_state, rng):
-        codes = random.randint(rng, (25, self.latent_vars), 0, self.latent_dim)
-        codes = one_hot(codes, self.latent_dim)
+        codes = random.randint(rng, (25, self.latent_dim), 0, self.num_values)
+        codes = one_hot(codes, self.num_values)
         labels = random.randint(rng, (25,), 0, 10)
-        codes = concat_labels(codes, labels)
+        codes = concat_labels(codes, labels, self.num_classes)
         dec_params = train_state.dec_state.params
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
+        reconst = reconst.reshape((-1, *self.image_shape))
         return reconst, labels
     
     
@@ -592,38 +608,41 @@ class MADELearner:
     model_name : str = 'made'
     latent_dim : int = 784
     num_values : int = 2
+    num_classes : int = 10
     learning_rate : float = 1e-4
     beta1 : float = 0.9
     beta2 : float = 0.5
-    hidden_sizes : Sequence[int] = (latent_dim,)
+    num_layers : int = 2
+    hidden_size : int = 2
     
     #@partial(jit, static_argnums=0)
     def initial_state(self, rng):
+        size = self.hidden_size * self.latent_dim * self.num_values
+        sizes = (self.num_layers - 1) * (int(np.floor(size)),)
         made = MaskedMLP(latent_dim=self.latent_dim, 
                          num_values=self.num_values,
-                         hidden_sizes=self.hidden_sizes)
+                         hidden_sizes=sizes)
         params = made.init(rng, jnp.ones((10, self.latent_dim, self.num_values), jnp.float32))
         optim = adam(self.learning_rate, self.beta1, self.beta2)
         return MADETrainState.create(made, params, optim)
     
-    def compute_loss(self, train_state, params, rng, inputs, train=True):
+    def compute_loss(self, train_state, params, inputs, labels):
         logprobs = train_state.made_state.apply_fn(params, inputs)
         return jnp.mean(jnp.sum(-inputs * logprobs, axis=(1, 2)))
     
     @partial(jit, static_argnums=0)
-    def train_step(self, train_state, rng, inputs, train=True):
+    def train_step(self, train_state, rng, inputs, labels):
         inputs = one_hot(inputs.reshape((-1, self.latent_dim)), self.num_values)
-        def loss_fn(params, rng):
-            loss = self.compute_loss(train_state, params, rng, inputs, train)
-            metrics = {'loss': loss}
-            return loss, metrics
-        step_rng, rng = random.split(rng)
+        labels = one_hot(labels.reshape((-1,)), self.num_classes)
+        def loss_fn(params):
+            loss = self.compute_loss(train_state, params, inputs, labels)
+            return loss, {'loss': loss}
         params = train_state.made_state.params
-        (loss, batch_stats), grads = value_and_grad(loss_fn, has_aux=True)(params, step_rng)
+        (loss, batch_stats), grads = value_and_grad(loss_fn, has_aux=True)(params)
         new_train_state = train_state.apply_gradients(grads=grads)
         return new_train_state, rng, batch_stats
     
-    #@partial(jit, static_argnums=0)
+    @partial(jit, static_argnums=0)
     def generate(self, train_state, rng):
         rng = random.split(rng, self.latent_dim)
         samples = jnp.ones((25, self.latent_dim, self.num_values))
@@ -632,21 +651,14 @@ class MADELearner:
             next_dim = random.categorical(rng[i, :], logprobs[:, i, :], axis=-1)
             return index_update(samples, index[:, i, :], one_hot(next_dim, self.num_values))
         samples = lax.fori_loop(0, self.latent_dim, jit(sample_next_dim), samples)
-        return samples
-    
-    @partial(jit, static_argnums=0)
-    def greedy_generate(self, train_state, rng, inputs):
-        logprobs = train_state.made_state.apply_fn(train_state.made_state.params, inputs)
-        sample = random.categorical(rng, logprobs, axis=-1)
-        return one_hot(sample, self.num_values)
+        return samples, jnp.zeros((25,))
     
     @partial(jit, static_argnums=0)
     def evaluate(self, train_state, rng, inputs, labels):
-        loss_rng, generate_rng = random.split(rng)
         inputs = one_hot(inputs.reshape((-1, self.latent_dim)), self.num_values)
-        loss = self.compute_loss(train_state, train_state.made_state.params,
-                                 loss_rng, inputs, train=False)
-        generated = self.generate(train_state, generate_rng)
+        labels = one_hot(labels.reshape((-1,)), self.num_classes)
+        loss = self.compute_loss(train_state, train_state.made_state.params, inputs, labels)
+        generated, gen_labels = self.generate(train_state, rng)
         generated = jnp.argmax(generated, axis=-1).reshape((-1, 28, 28, 1))
         inputs = jnp.argmax(inputs, axis=-1).reshape((-1, 28, 28, 1))
         metrics = {'loss': loss}
@@ -654,8 +666,46 @@ class MADELearner:
                 'image': inputs, 
                 'output': inputs, 
                 'label': jnp.zeros((inputs.shape[0],)), 
-                'generated_label': jnp.zeros((generated.shape[0],))}
+                'generated_label': gen_labels}
         return metrics, data
+    
+    
+@dataclass
+class ClassMADELearner(MADELearner):  
+    
+    model_name : str = 'class_made'
+    
+    #@partial(jit, static_argnums=0)
+    def initial_state(self, rng):
+        size = self.hidden_size * self.latent_dim * self.num_values
+        sizes = (self.num_layers - 1) * (int(np.floor(size)),)
+        made = ClassMaskedMLP(latent_dim=self.latent_dim, 
+                              num_values=self.num_values,
+                              num_classes=self.num_classes,
+                              hidden_sizes=sizes)
+        inputs = jnp.ones((10, self.latent_dim, self.num_values), jnp.float32)
+        classes = jnp.zeros((10, self.num_classes))
+        params = made.init(rng, inputs, classes)
+        optim = adam(self.learning_rate, self.beta1, self.beta2)
+        return MADETrainState.create(made, params, optim)
+    
+    def compute_loss(self, train_state, params, inputs, labels):
+        logprobs = train_state.made_state.apply_fn(params, inputs, labels)
+        return jnp.mean(jnp.sum(-inputs * logprobs, axis=(1, 2)))
+    
+    @partial(jit, static_argnums=0)
+    def generate(self, train_state, rng):
+        rng, label_rng = random.split(rng)
+        rng = random.split(rng, self.latent_dim)
+        samples = jnp.ones((25, self.latent_dim, self.num_values))
+        labels = one_hot(random.randint(label_rng, (25,), 0, 10), self.num_classes)
+        def sample_next_dim(i, samples):
+            logprobs = train_state.made_state.apply_fn(train_state.made_state.params, samples, labels)
+            next_dim = random.categorical(rng[i, :], logprobs[:, i, :], axis=-1)
+            return index_update(samples, index[:, i, :], one_hot(next_dim, self.num_values))
+        samples = lax.fori_loop(0, self.latent_dim, jit(sample_next_dim), samples)
+        labels = jnp.argmax(labels, -1)
+        return samples, labels
 
 
 @dataclass
@@ -670,15 +720,32 @@ class VQVAELearner(VAELearner):
     made_beta2 : float = 0.5
     made_epochs : int = 10
     made_batch : int = 60
+    made_num_layers : int = 2
+    made_hidden_size : int = 2
+    ema_vq : bool = False
+    vq_momentum : float = 0.9
 
     def initial_state(self, rng):
+        kwargs = dict(embedding_dim=self.embedding_dim,
+                      num_embeddings=self.num_values,
+                      commitment_cost=self.commitment_cost)
+        if self.ema_vq:
+            kwargs['momentum'] = self.vq_momentum
+        quantizer = KMeansQuantizer(**kwargs) if self.ema_vq else Quantizer(**kwargs)
+        return self._initial_state_helper(quantizer, rng)
+            
+    @partial(jit, static_argnums=(0, 1))
+    def _initial_state_helper(self, quantizer, rng):
         enc_rng, dec_rng, vq_rng = random.split(rng, 3)
+        enc_hidden_size = int(np.floor(self.enc_hidden_size * self.image_size))
+        dec_hidden_size = int(np.floor(self.dec_hidden_size * self.image_size))
         encoder = MLP(input_size=self.image_size, 
+                      hidden_sizes=(self.num_enc_layers - 1) * (enc_hidden_size,),
                       output_size=self.latent_dim * self.embedding_dim)
-        decoder = Decoder(input_size=self.latent_dim * self.embedding_dim)
-        quantizer = Quantizer(embedding_dim=self.embedding_dim,
-                              num_embeddings=self.num_values,
-                              commitment_cost=self.commitment_cost)
+        decoder = MLP(input_size=self.latent_dim * self.embedding_dim, 
+                      hidden_sizes=(self.num_dec_layers - 1) * (dec_hidden_size,),
+                      output_size=self.image_size,
+                      activation=nn.log_sigmoid)
         enc_params = encoder.init(enc_rng, jnp.ones((10,) + self.image_shape, jnp.float32))
         dec_params = decoder.init(dec_rng, jnp.ones((10, self.latent_dim, self.embedding_dim), jnp.float32))
         vq_params = quantizer.init(vq_rng, jnp.ones((10, self.latent_dim, self.embedding_dim), jnp.float32))
@@ -686,26 +753,29 @@ class VQVAELearner(VAELearner):
         return VQVAETrainState.create(encoder, enc_params, make_optim(),
                                       decoder, dec_params, make_optim(),
                                       quantizer, vq_params, make_optim())
-
+        
+    @partial(jit, static_argnums=0)
     def compute_loss(self, train_state, enc_params, dec_params, vq_params, 
                      rng, inputs, labels, train=True):
         latents = train_state.enc_state.apply_fn(enc_params, inputs)
         latents = latents.reshape((-1, self.latent_dim, self.embedding_dim))
-        codes, vq_aux = train_state.vq_state.apply_fn(vq_params, latents)
+        (codes, vq_aux), _ = train_state.vq_state.apply_fn(vq_params, latents, train=train, 
+                                                           mutable=['embedding_vars'])
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
-        aux = {'image': inputs, 'label': labels, 'output': jnp.exp(reconst)}
+        reconst = reconst.reshape((-1, *self.image_shape))
+        aux = {'image': inputs, 'label': labels, 'output': jnp.exp(reconst), 'latents': latents}
         return bce_loss(inputs, reconst), vq_aux.pop('loss'), {**aux, **vq_aux}
     
     @partial(jit, static_argnums=0)
-    def train_step(self, train_state, rng, inputs, labels, train=True):
+    def train_step(self, train_state, rng, inputs, labels):
         def loss_fn(enc_params, dec_params, vq_params, rng):
-            reconst_loss, kl_penalty, aux = self.compute_loss(train_state, enc_params, dec_params, 
-                                                              vq_params, rng, inputs, labels, train)
-            metrics = {'loss': reconst_loss + self.beta * kl_penalty, 
+            reconst_loss, penalty, aux = self.compute_loss(train_state, enc_params, dec_params, 
+                                                           vq_params, rng, inputs, labels, True)
+            metrics = {'loss': reconst_loss + self.beta * penalty, 
                        'reconst_loss': reconst_loss, 
-                       'penalty_kl_loss': kl_penalty,
+                       'penalty_loss': penalty,
                        'perplexity': aux.pop('perplexity')}
-            return reconst_loss + self.beta * kl_penalty, metrics
+            return reconst_loss + self.beta * penalty, metrics
         
         step_rng, rng = random.split(rng)
         val_and_grad = value_and_grad(loss_fn, has_aux=True, argnums=(0, 1, 2))
@@ -719,49 +789,46 @@ class VQVAELearner(VAELearner):
         return new_train_state, rng, stats
 
     def make_made(self):
-        hidden_sizes = 2 * (self.latent_dim * self.num_values,)
-        made = MADELearner(latent_dim=self.latent_dim,
+        return MADELearner(latent_dim=self.latent_dim,
                            num_values=self.num_values,
                            learning_rate=self.made_learning_rate,
                            beta1=self.made_beta1,
                            beta2=self.made_beta2,
-                           hidden_sizes=hidden_sizes)
-        return made
+                           num_layers=self.made_num_layers,
+                           hidden_size=self.made_hidden_size)
 
     @partial(jit, static_argnums=0)
-    def generate(self, train_state, made_train_state, rng):
-        samples = self.make_made().generate(made_train_state, rng)
-        embeddings = train_state.vq_state.params['params']['embeddings']
+    def generate(self, train_state, made_train_state, embeddings, rng):
+        samples, labels = self.make_made().generate(made_train_state, rng)
         idx = jnp.argmax(samples.reshape((-1, self.latent_dim, self.num_values)), -1)
         quantized = jax.device_put(embeddings.T)[(idx,)]
         outputs = train_state.dec_state.apply_fn(train_state.dec_state.params, quantized)
-        return jnp.exp(outputs), jnp.zeros((25,))
+        outputs = outputs.reshape((-1, *self.image_shape))
+        return jnp.exp(outputs), labels
     
-    def train_made(self, encodings, rng, epochs):
+    def train_made(self, encodings, labels, rng, epochs):
         made = self.make_made()
         rng, init_rng = random.split(rng)
         state = made.initial_state(init_rng)
         
-        path = os.path.join(FLAGS.save_dir, made.model_name)
-        path = os.path.join(path, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        summary_writer = SummaryWriter(path)
-        
         steps_per_epoch = encodings.shape[0] // self.made_batch
+        epoch_metrics_np = dict()
         for epoch in range(epochs):
             perms = jax.random.permutation(rng, encodings.shape[0])
             perms = perms[:steps_per_epoch * self.made_batch]
             perms = perms.reshape((steps_per_epoch, self.made_batch))
             batch_metrics = list()
             for perm in tqdm(perms, leave=False):
-                batch = encodings[perm, ...]
-                state, rng, metrics = made.train_step(state, rng, batch)
+                enc_batch = encodings[perm, ...]
+                label_batch = labels[perm, ...]
+                state, rng, metrics = made.train_step(state, rng, enc_batch, label_batch)
                 batch_metrics.append(metrics)
             batch_metrics_np = jax.device_get(batch_metrics)
             epoch_metrics_np = {metric: np.mean([metrics[metric] for metrics in batch_metrics_np])
                                 for metric in batch_metrics_np[0]}
-            write_summary(summary_writer, epoch_metrics_np, epoch, True, False)
             state = state.next_epoch()
-        return state
+        epoch_metrics_np = {"made_" + metric: value for (metric, value) in epoch_metrics_np.items()}
+        return state, epoch_metrics_np
             
     def evaluate(self, train_state, rng, inputs, labels):
         loss_rng, made_rng, generate_rng = random.split(rng, 3)
@@ -769,40 +836,87 @@ class VQVAELearner(VAELearner):
                                                           train_state.enc_state.params, 
                                                           train_state.dec_state.params,
                                                           train_state.vq_state.params,
-                                                          loss_rng, inputs, labels)
-        encodings = train_state.enc_state.apply_fn(train_state.enc_state.params, inputs)
-        encodings = encodings.reshape((-1, self.latent_dim, self.num_values))
-        made_state = self.train_made(encodings, made_rng, self.made_epochs)
-        generated, gen_labels = self.generate(train_state, made_state, generate_rng)
+                                                          loss_rng, inputs, labels, False)
+        encodings = aux['encoding_index'].reshape((-1, self.latent_dim))
+        made_state, made_metrics = self.train_made(encodings, labels, made_rng, self.made_epochs)
+        embed_col = 'embedding_vars' if self.ema_vq else 'params'
+        embeddings = train_state.vq_state.params[embed_col]['embeddings']
+        generated, gen_labels = self.generate(train_state, made_state, embeddings, generate_rng)
         metrics = {'loss': reconst_loss + kl_penalty, 
                    'reconst_loss': reconst_loss, 
                    'penalty_kl_loss': kl_penalty,
-                   'perplexity': aux.pop('perplexity')}
+                   'perplexity': aux.pop('perplexity'),
+                   **made_metrics}
         data = {'generated': jnp.exp(generated),
                 'generated_label': gen_labels, **aux}
         return metrics, data
+    
+    
+@dataclass
+class ClassVQVAELearner(VQVAELearner):
+    model_name : str = 'class_vqvae'
+            
+    @partial(jit, static_argnums=(0, 1))
+    def _initial_state_helper(self, quantizer, rng):
+        enc_rng, dec_rng, vq_rng = random.split(rng, 3)
+        dec_input_size = self.latent_dim * self.embedding_dim + self.num_classes
+        enc_hidden_size = int(np.floor(self.enc_hidden_size * self.image_size))
+        dec_hidden_size = int(np.floor(self.dec_hidden_size * self.image_size))
+        encoder = MLP(input_size=self.image_size, 
+                      hidden_sizes=(self.num_enc_layers - 1) * (enc_hidden_size,),
+                      output_size=self.latent_dim * self.embedding_dim)
+        decoder = MLP(input_size=dec_input_size, 
+                      hidden_sizes=(self.num_dec_layers - 1) * (dec_hidden_size,),
+                      output_size=self.image_size,
+                      activation=nn.log_sigmoid)
+        enc_params = encoder.init(enc_rng, jnp.ones((10,) + self.image_shape, jnp.float32))
+        dec_params = decoder.init(dec_rng, jnp.ones((10, dec_input_size), jnp.float32))
+        vq_params = quantizer.init(vq_rng, jnp.ones((10, self.latent_dim, self.embedding_dim), jnp.float32))
+        make_optim = lambda: adam(self.learning_rate, self.beta1, self.beta2)
+        return VQVAETrainState.create(encoder, enc_params, make_optim(),
+                                      decoder, dec_params, make_optim(),
+                                      quantizer, vq_params, make_optim())
+        
+    @partial(jit, static_argnums=0)
+    def compute_loss(self, train_state, enc_params, dec_params, vq_params, 
+                     rng, inputs, labels, train=True):
+        latents = train_state.enc_state.apply_fn(enc_params, inputs)
+        latents = latents.reshape((-1, self.latent_dim, self.embedding_dim))
+        (codes, vq_aux), _ = train_state.vq_state.apply_fn(vq_params, latents, train=train, 
+                                                           mutable=['embedding_vars'])
+        codes = concat_labels(codes, labels, self.num_classes)
+        reconst = train_state.dec_state.apply_fn(dec_params, codes)
+        reconst = reconst.reshape((-1, *self.image_shape))
+        aux = {'image': inputs, 'label': labels, 'output': jnp.exp(reconst), 'latents': latents}
+        return bce_loss(inputs, reconst), vq_aux.pop('loss'), {**aux, **vq_aux}
+
+    def make_made(self):
+        return ClassMADELearner(latent_dim=self.latent_dim,
+                                num_values=self.num_values,
+                                num_classes=self.num_classes,
+                                learning_rate=self.made_learning_rate,
+                                beta1=self.made_beta1,
+                                beta2=self.made_beta2,
+                                num_layers=self.made_num_layers,
+                                hidden_size=self.made_hidden_size)
+
+    @partial(jit, static_argnums=0)
+    def generate(self, train_state, made_train_state, embeddings, rng):
+        samples, labels = self.make_made().generate(made_train_state, rng)
+        idx = jnp.argmax(samples.reshape((-1, self.latent_dim, self.num_values)), -1)
+        quantized = jax.device_put(embeddings.T)[(idx,)]
+        quantized = concat_labels(quantized, labels, self.num_classes)
+        outputs = train_state.dec_state.apply_fn(train_state.dec_state.params, quantized)
+        outputs = outputs.reshape((-1, *self.image_shape))
+        return jnp.exp(outputs), labels
 
 
-def main():
-    #wandb.init()
-    FLAGS(sys.argv) 
-
-    epochs = FLAGS.epochs
-    batch_size = FLAGS.batch_size
-    test_interval = FLAGS.test_interval
+def train(coder, epochs, batch_size, test_interval, seed, save_dir="./tmp/", made_coeff=None):
     train, test = get_datasets()
-    coder = VQVAELearner(learning_rate=FLAGS.learning_rate,
-                         beta1=FLAGS.beta2,
-                         beta2=FLAGS.beta1,
-                         beta=FLAGS.beta,
-                         commitment_cost=FLAGS.commitment_cost,
-                         latent_dim=FLAGS.latent_dim,
-                         embedding_dim=FLAGS.embedding_dim,
-                         num_values=FLAGS.num_values)
-    rng, init_rng = random.split(random.PRNGKey(FLAGS.prng_key))
+    rng, init_rng = random.split(random.PRNGKey(seed))
     state = coder.initial_state(init_rng)
 
-    path = os.path.join(FLAGS.save_dir, coder.model_name)
+    path = os.path.join(save_dir, coder.model_name)
     path = os.path.join(path, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     summary_writer = SummaryWriter(path)
 
@@ -824,15 +938,9 @@ def main():
             rng, eval_rng = random.split(rng)
             eval_metrics, eval_data = coder.evaluate(state, eval_rng, test['image'], test['label'])
             eval_metrics_np, eval_data_np = jax.device_get(eval_metrics), jax.device_get(eval_data)
-            write_summary(summary_writer, eval_metrics_np, epoch, False)
+            write_summary(summary_writer, eval_metrics_np, epoch, False, made_coeff)
             write_data(summary_writer, eval_data_np, epoch, False)
         state = state.next_epoch()
-    
-        
-    #wandb.finish()
-
-if __name__ == "__main__":
-    main()
 
 
 
