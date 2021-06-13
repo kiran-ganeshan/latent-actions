@@ -308,14 +308,13 @@ class Quantizer(nn.Module):
         over_latents = jnp.mean(avg_probs, tuple(range(len(input_shape) - 1)))
         perplexity = jnp.exp(-jnp.sum(over_latents * jnp.log(over_latents + 1e-20)))
         aux = {
-            'loss': loss,
             'encoding': enc,
             'encoding_index': enc_idx,
             'avg_probs': avg_probs,
             'perplexity': perplexity,
             'centers': e.T
         }
-        return quantized, aux
+        return quantized, loss, aux
     
     
 class KMeansQuantizer(nn.Module):
@@ -351,24 +350,23 @@ class KMeansQuantizer(nn.Module):
         initializing = self.is_mutable_collection('params')
         no_update = lambda _: (e, cs, un)
         new_e, new_cs, new_un = lax.cond(train, update, no_update, None)
-        update = lambda _: (new_e, new_cs, new_un)
-        new_e, new_cs, new_un = lax.cond(initializing, no_update, update, None)
+        full_update = lambda _: (new_e, new_cs, new_un)
+        new_e, new_cs, new_un = lax.cond(initializing, no_update, full_update, None)
         embeddings.value, cluster_size.value, unnormalized.value = new_e, new_cs, new_un
         x = x.reshape((*input_shape, self.embedding_dim))
-        loss = self.commitment_cost * jnp.mean((jax.lax.stop_gradient(quantized) - x)**2)
-        quantized = x + jax.lax.stop_gradient(quantized - x)
+        loss = self.commitment_cost * jnp.mean((lax.stop_gradient(quantized) - x)**2)
+        quantized = x + lax.stop_gradient(quantized - x)
         avg_probs = jnp.mean(enc.reshape((*input_shape, -1)), 0)
         over_latents = jnp.mean(avg_probs, tuple(range(len(input_shape) - 1)))
         perplexity = jnp.exp(-jnp.sum(over_latents * jnp.log(over_latents + 1e-20)))
         aux = {
-            'loss': loss,
             'encoding': enc,
             'encoding_index': enc_idx,
             'avg_probs': avg_probs,
             'perplexity': perplexity,
             'centers': embeddings.value.T
         }
-        return quantized, aux
+        return quantized, loss, aux
 
 
 @dataclass
@@ -422,7 +420,7 @@ class VAELearner:
                                                               rng, inputs, labels, True)
             metrics = {'loss': reconst_loss + kl_penalty, 
                        'reconst_loss': reconst_loss, 
-                       'penalty_kl_loss': kl_penalty}
+                       'penalty_loss': kl_penalty}
             return reconst_loss + self.beta * kl_penalty, metrics
         
         step_rng, rng = random.split(rng)
@@ -450,7 +448,7 @@ class VAELearner:
         generated, gen_labels = self.generate(train_state, generate_rng)
         metrics = {'loss': reconst_loss + self.beta * kl_penalty, 
                    'reconst_loss': reconst_loss, 
-                   'penalty_kl_loss': kl_penalty}
+                   'penalty_loss': kl_penalty}
         data = {'generated': jnp.exp(generated),
                 'generated_label': gen_labels, **aux}
         return metrics, data
@@ -754,17 +752,16 @@ class VQVAELearner(VAELearner):
                                       decoder, dec_params, make_optim(),
                                       quantizer, vq_params, make_optim())
         
-    @partial(jit, static_argnums=0)
     def compute_loss(self, train_state, enc_params, dec_params, vq_params, 
                      rng, inputs, labels, train=True):
         latents = train_state.enc_state.apply_fn(enc_params, inputs)
         latents = latents.reshape((-1, self.latent_dim, self.embedding_dim))
-        (codes, vq_aux), _ = train_state.vq_state.apply_fn(vq_params, latents, train=train, 
-                                                           mutable=['embedding_vars'])
+        (codes, penalty, vq_aux), _ = train_state.vq_state.apply_fn(vq_params, latents, train=train, 
+                                                                    mutable=['embedding_vars'])
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
         reconst = reconst.reshape((-1, *self.image_shape))
         aux = {'image': inputs, 'label': labels, 'output': jnp.exp(reconst), 'latents': latents}
-        return bce_loss(inputs, reconst), vq_aux.pop('loss'), {**aux, **vq_aux}
+        return bce_loss(inputs, reconst), penalty, {**aux, **vq_aux}
     
     @partial(jit, static_argnums=0)
     def train_step(self, train_state, rng, inputs, labels):
@@ -774,7 +771,7 @@ class VQVAELearner(VAELearner):
             metrics = {'loss': reconst_loss + self.beta * penalty, 
                        'reconst_loss': reconst_loss, 
                        'penalty_loss': penalty,
-                       'perplexity': aux.pop('perplexity')}
+                       'perplexity': aux['perplexity']}
             return reconst_loss + self.beta * penalty, metrics
         
         step_rng, rng = random.split(rng)
@@ -832,17 +829,17 @@ class VQVAELearner(VAELearner):
             
     def evaluate(self, train_state, rng, inputs, labels):
         loss_rng, made_rng, generate_rng = random.split(rng, 3)
-        reconst_loss, kl_penalty, aux = self.compute_loss(train_state,
-                                                          train_state.enc_state.params, 
-                                                          train_state.dec_state.params,
-                                                          train_state.vq_state.params,
-                                                          loss_rng, inputs, labels, False)
+        reconst_loss, kl_penalty, aux = jit(self.compute_loss)(train_state,
+                                                               train_state.enc_state.params,
+                                                               train_state.dec_state.params,
+                                                               train_state.vq_state.params,
+                                                               loss_rng, inputs, labels, False)
         encodings = aux['encoding_index'].reshape((-1, self.latent_dim))
         made_state, made_metrics = self.train_made(encodings, labels, made_rng, self.made_epochs)
         embed_col = 'embedding_vars' if self.ema_vq else 'params'
         embeddings = train_state.vq_state.params[embed_col]['embeddings']
         generated, gen_labels = self.generate(train_state, made_state, embeddings, generate_rng)
-        metrics = {'loss': reconst_loss + kl_penalty, 
+        metrics = {'loss': reconst_loss + self.beta * kl_penalty, 
                    'reconst_loss': reconst_loss, 
                    'penalty_kl_loss': kl_penalty,
                    'perplexity': aux.pop('perplexity'),
@@ -877,18 +874,17 @@ class ClassVQVAELearner(VQVAELearner):
                                       decoder, dec_params, make_optim(),
                                       quantizer, vq_params, make_optim())
         
-    @partial(jit, static_argnums=0)
     def compute_loss(self, train_state, enc_params, dec_params, vq_params, 
                      rng, inputs, labels, train=True):
         latents = train_state.enc_state.apply_fn(enc_params, inputs)
         latents = latents.reshape((-1, self.latent_dim, self.embedding_dim))
-        (codes, vq_aux), _ = train_state.vq_state.apply_fn(vq_params, latents, train=train, 
-                                                           mutable=['embedding_vars'])
+        (codes, penalty, vq_aux), _ = train_state.vq_state.apply_fn(vq_params, latents, train=train, 
+                                                                    mutable=['embedding_vars'])
         codes = concat_labels(codes, labels, self.num_classes)
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
         reconst = reconst.reshape((-1, *self.image_shape))
         aux = {'image': inputs, 'label': labels, 'output': jnp.exp(reconst), 'latents': latents}
-        return bce_loss(inputs, reconst), vq_aux.pop('loss'), {**aux, **vq_aux}
+        return bce_loss(inputs, reconst), penalty, {**aux, **vq_aux}
 
     def make_made(self):
         return ClassMADELearner(latent_dim=self.latent_dim,
