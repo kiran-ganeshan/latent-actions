@@ -142,10 +142,12 @@ class VQVAETrainState(VAETrainState):
                                vq_state=self.vq_state,
                                epoch=self.epoch + 1)
     
-    def apply_gradients(self, enc_grads, dec_grads, vq_grads):
+    def apply_gradients(self, enc_grads, dec_grads, vq_grads, new_vars={}):
         enc_state = self.enc_state.apply_gradients(grads=enc_grads)
         dec_state = self.dec_state.apply_gradients(grads=dec_grads)
         vq_state = self.vq_state.apply_gradients(grads=vq_grads)
+        new_vars = vq_state.params.copy(add_or_replace=new_vars)
+        vq_state = vq_state.replace(params=new_vars)
         return VQVAETrainState(enc_state=enc_state, 
                                dec_state=dec_state, 
                                vq_state=vq_state, 
@@ -758,12 +760,12 @@ class VQVAELearner(VAELearner):
                      rng, inputs, labels, train=True):
         latents = train_state.enc_state.apply_fn(enc_params, inputs)
         latents = latents.reshape((-1, self.latent_dim, self.embedding_dim))
-        (codes, penalty, vq_aux), _ = train_state.vq_state.apply_fn(vq_params, latents, train=train, 
-                                                                    mutable=['embedding_vars'])
+        (codes, penalty, vq_aux), new_vars = train_state.vq_state.apply_fn(vq_params, latents, train=train, 
+                                                                           mutable=['embedding_vars'])
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
         reconst = reconst.reshape((-1, *self.image_shape))
         aux = {'image': inputs, 'label': labels, 'output': jnp.exp(reconst), 'latents': latents}
-        return bce_loss(inputs, reconst), penalty, {**aux, **vq_aux}
+        return bce_loss(inputs, reconst), penalty, {**aux, **vq_aux, 'new_vars': new_vars}
     
     @partial(jit, static_argnums=0)
     def train_step(self, train_state, rng, inputs, labels):
@@ -774,18 +776,19 @@ class VQVAELearner(VAELearner):
                        'reconst_loss': reconst_loss, 
                        'penalty_loss': penalty,
                        'perplexity': aux['perplexity']}
-            return reconst_loss + self.beta * penalty, metrics
+            return reconst_loss + self.beta * penalty, {'metrics': metrics, 'new_vars': aux['new_vars']}
         
         step_rng, rng = random.split(rng)
         val_and_grad = value_and_grad(loss_fn, has_aux=True, argnums=(0, 1, 2))
         (loss, stats), (e_grads, d_grads, q_grads) = val_and_grad(train_state.enc_state.params, 
-                                                                  train_state.dec_state.params, 
-                                                                  train_state.vq_state.params, 
-                                                                  step_rng)
+                                                                 train_state.dec_state.params, 
+                                                                 train_state.vq_state.params, 
+                                                                 step_rng)
         new_train_state = train_state.apply_gradients(enc_grads=e_grads, 
                                                       dec_grads=d_grads, 
-                                                      vq_grads=q_grads)
-        return new_train_state, rng, stats
+                                                      vq_grads=q_grads,
+                                                      new_vars=stats['new_vars'])
+        return new_train_state, rng, stats['metrics']
 
     def make_made(self):
         return MADELearner(latent_dim=self.latent_dim,
@@ -880,13 +883,13 @@ class ClassVQVAELearner(VQVAELearner):
                      rng, inputs, labels, train=True):
         latents = train_state.enc_state.apply_fn(enc_params, inputs)
         latents = latents.reshape((-1, self.latent_dim, self.embedding_dim))
-        (codes, penalty, vq_aux), _ = train_state.vq_state.apply_fn(vq_params, latents, train=train, 
-                                                                    mutable=['embedding_vars'])
+        (codes, penalty, vq_aux), new_vars = train_state.vq_state.apply_fn(vq_params, latents, train=train, 
+                                                                           mutable=['embedding_vars'])
         codes = concat_labels(codes, labels, self.num_classes)
         reconst = train_state.dec_state.apply_fn(dec_params, codes)
         reconst = reconst.reshape((-1, *self.image_shape))
         aux = {'image': inputs, 'label': labels, 'output': jnp.exp(reconst), 'latents': latents}
-        return bce_loss(inputs, reconst), penalty, {**aux, **vq_aux}
+        return bce_loss(inputs, reconst), penalty, {**aux, **vq_aux, 'new_vars': new_vars}
 
     def make_made(self):
         return ClassMADELearner(latent_dim=self.latent_dim,
