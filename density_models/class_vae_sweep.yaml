@@ -5,9 +5,9 @@ command:
   - python3
   - ${program}
   - "--test_interval"
-  - 5
-  - "--epochs"
   - 20
+  - "--epochs"
+  - 100
   - "--batch_size"
   - 60
   - ${args}
