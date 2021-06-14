@@ -653,6 +653,7 @@ class MADELearner:
             next_dim = random.categorical(rng[i, :], logprobs[:, i, :], axis=-1)
             return index_update(samples, index[:, i, :], one_hot(next_dim, self.num_values))
         samples = lax.fori_loop(0, self.latent_dim, jit(sample_next_dim), samples)
+        labels = jnp.argmax(labels, -1)
         return samples, labels
     
     @partial(jit, static_argnums=0)
