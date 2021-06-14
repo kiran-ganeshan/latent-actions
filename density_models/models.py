@@ -642,14 +642,16 @@ class MADELearner:
     
     @partial(jit, static_argnums=0)
     def generate(self, train_state, rng):
+        rng, label_rng = random.split(rng)
         rng = random.split(rng, self.latent_dim)
         samples = jnp.ones((25, self.latent_dim, self.num_values))
+        labels = one_hot(random.randint(label_rng, (25,), 0, self.num_classes), self.num_classes)
         def sample_next_dim(i, samples):
             logprobs = train_state.made_state.apply_fn(train_state.made_state.params, samples)
             next_dim = random.categorical(rng[i, :], logprobs[:, i, :], axis=-1)
             return index_update(samples, index[:, i, :], one_hot(next_dim, self.num_values))
         samples = lax.fori_loop(0, self.latent_dim, jit(sample_next_dim), samples)
-        return samples, jnp.zeros((25,))
+        return samples, labels
     
     @partial(jit, static_argnums=0)
     def evaluate(self, train_state, rng, inputs, labels):
@@ -696,7 +698,7 @@ class ClassMADELearner(MADELearner):
         rng, label_rng = random.split(rng)
         rng = random.split(rng, self.latent_dim)
         samples = jnp.ones((25, self.latent_dim, self.num_values))
-        labels = one_hot(random.randint(label_rng, (25,), 0, 10), self.num_classes)
+        labels = one_hot(random.randint(label_rng, (25,), 0, self.num_classes), self.num_classes)
         def sample_next_dim(i, samples):
             logprobs = train_state.made_state.apply_fn(train_state.made_state.params, samples, labels)
             next_dim = random.categorical(rng[i, :], logprobs[:, i, :], axis=-1)
@@ -841,7 +843,7 @@ class VQVAELearner(VAELearner):
         generated, gen_labels = self.generate(train_state, made_state, embeddings, generate_rng)
         metrics = {'loss': reconst_loss + self.beta * kl_penalty, 
                    'reconst_loss': reconst_loss, 
-                   'penalty_kl_loss': kl_penalty,
+                   'penalty_loss': kl_penalty,
                    'perplexity': aux.pop('perplexity'),
                    **made_metrics}
         data = {'generated': jnp.exp(generated),
