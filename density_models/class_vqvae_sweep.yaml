@@ -20,7 +20,10 @@ metric:
 parameters:
   learning_rate:
     min: 0.000001
-    max: 0.001
+    max: 0.0001
+  lr_decay:
+    min: 0.01
+    max: 0.3
   beta1: 
     min: 0.7
     max: 0.999
@@ -30,6 +33,9 @@ parameters:
   beta:
     min: 0.1
     max: 3
+  made_lr_decay:
+    min: 0.01
+    max: 0.3
   made_learning_rate:
     min: 0.000001
     max: 0.01

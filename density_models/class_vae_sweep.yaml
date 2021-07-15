@@ -18,7 +18,10 @@ metric:
 parameters:
   learning_rate:
     min: 0.000001
-    max: 0.001
+    max: 0.0001
+  lr_decay:
+    min: 0.01
+    max: 0.3
   beta1: 
     min: 0.7
     max: 0.999
