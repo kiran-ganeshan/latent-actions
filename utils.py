@@ -7,8 +7,9 @@ import matplotlib.pyplot as plt
 import wandb
 import gym
 import d4rl
-import scipy
+from typing import Callable
 from tqdm import tqdm
+from math import exp, log, floor, pow
 
 matplotlib.use('agg')
 
@@ -192,3 +193,61 @@ def write_data(data, train=False):
         scatter = scatter_plot(data['latents'], data['centers'])
         wandb_metrics[wandb_img_str + "embeddings"] = wandb.Image(scatter)
     wandb.log(wandb_metrics)
+    
+'''    
+class Scaling(Enum):
+    'UNIF' = 1              # uniform distribution between two floats
+    'EXP' = 2               # exponential distribution between two floats
+    'LOG' = 3               # logarithmic distribution between two floats
+    'NEGEXP' = 4            # negative exponential distribution between two floats
+    'INTUNIF' = 5           # int-uniform distribution between two ints
+        
+        
+def make_scale(hyperparam_scales, param_name, min, max, n):
+    assert param_name in hyperparam_scales.keys()
+    try:
+        scaling = hyperparam_scales[param_name]
+    except KeyError:
+        print("Must add " + param_name + " to hyperparameter scaling dictionary.")
+    if scaling == Scaling.UNIF:
+        return [i * (max - min) / (n - 1) + min for i in range(n)]
+    elif scaling == Scaling.EXP:
+        return [min * exp(i / (n - 1) * log(max/min)) for i in range(n)]
+    elif scaling == Scaling.LOG:
+        return [min * log(i / (n - 1) * exp(max/min)) for i in range(n)]
+    elif scaling == Scaling.NEGEXP:
+        return [max * exp(i / (n - 1) * log(min/max)) for i in range(n)]
+    elif scaling == Scaling.INTUNIF:
+        return [int(i  * (int(max) - int(min)) / (n - 1) + int(min)) for i in range(n)]
+
+    
+    
+def make_grid_config(param_scales, params, N):
+    grid_config = dict()
+    for param_name, vals in params.items():
+        if 'values' in vals.keys():
+            grid_config[param_name] = vals['values']
+            N = floor(N / len(vals['values']))
+            del vals['values']
+    for param_name, vals in params.items():
+        n = floor(pow(N, 1.0 / len(params.items())))
+        assert 'min' in vals.keys() and 'max' in vals.keys()
+        grid_config[param_name] = make_scale(param_scales, param_name, vals['min'], vals['max'], n)
+    return grid_config
+'''
+
+def submodule(method):
+    method.is_submodule = True
+    return property(method)
+
+
+def learner(cls):
+    modules = getattr(cls, "submodules", {})
+    for f in cls.__dict__.values():
+        if isinstance(f, Callable) and getattr(f, "is_submodule", False):
+            modules[f.__name__] = f
+            mod = lambda self, ts, params, *args, **kwargs: ts.apply_module(f.__name__, params, *args, **kwargs)
+            setattr(cls, f.__name__, mod)
+    cls.submodule_funcs = modules
+    cls.submodules = property(lambda self: {name: f(self) for name, f in self.submodule_funcs.items()})
+    return cls

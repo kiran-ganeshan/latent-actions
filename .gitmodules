@@ -1,6 +1,6 @@
 [submodule "BCQ"]
 	path = BCQ
-	url = https://github.com/sfujim/BCQ.git
+	url = https://github.com/kiran-ganeshan/BCQ.git
 [submodule "jaxrl"]
 	path = jaxrl
-	url = https://github.com/ikostrikov/jaxrl.git
+	url = https://github.com/kiran-ganeshan/jaxrl.git

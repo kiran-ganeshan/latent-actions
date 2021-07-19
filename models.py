@@ -10,37 +10,25 @@ from jax.nn import one_hot
 from tqdm import tqdm
 from flax.struct import dataclass
 from typing import Sequence
-from utils import kl_loss, bce_loss
+from utils import kl_loss, bce_loss, learner, submodule
 from modules import *
 from states import *
 from optax import adam
 
-class Submodules:
-    
-    submodules = []
-    
-    def __init__(self, module):
-        Submodules.submodules.append(module)
-        self.module = module
-        
-    def __call__(self, *args, **kwargs):
-        return self.module(args, kwargs)
-    
-submodules = []
-def submodule_decorator():
-    def submodule(f):
-        super(Learner).submodules[f.__name__] = f()
-        return property(f)
-    return submodule
-
-def empty_submodules():
-    submodules = []
 
 
-@dataclass
+
+@learner
 class Learner:
-    submodules : 'dict[str, Module]' = {}
-    submodule = submodule_decorator(submodules)
+    
+    @partial(jit, static_argnums=0)
+    def initial_state(self, total_steps, rng):
+        rngs = random.split(rng, len(self.submodules.items()))
+        optim = lambda: adam(decay(self.learning_rate, total_steps, self.lr_decay), self.beta1, self.beta2)
+        train_state = LearnerState()
+        for (name, module), rng in zip(self.submodules.items(), rngs):
+            train_state = train_state.add_module(name, module, module.input_shape, optim(), rng)
+        return train_state
     
     @partial(jit, static_argnums=0)
     def train_step(self, train_state, rng, *data):
@@ -66,7 +54,7 @@ class Learner:
         return metrics, aux
 
 
-@dataclass
+@learner
 class BaseVAELearner(Learner):
     cond_size : int
     input_size : int
@@ -83,8 +71,6 @@ class BaseVAELearner(Learner):
     num_dec_layers : int = 2
     enc_hidden_size : float = 0.5
     dec_hidden_size : float = 0.5
-    submodules : 'dict[str, Module]' = super.submodules
-    submodule = submodule_decorator(submodules)
     
     @submodule
     def encoder(self):
@@ -104,7 +90,6 @@ class BaseVAELearner(Learner):
                       activation=nn.log_sigmoid)
         return decoder
         
-        
     # commented to prevent JAX tracer leaks
     #@partial(jit, static_argnums=0)
     def initial_state(self, total_steps, rng):
@@ -117,11 +102,11 @@ class BaseVAELearner(Learner):
         
     def compute_loss(self, train_state, params, rng, *data, train=True):
         inputs, conds = data
-        mu, log_sigma = train_state.apply_module('encoder', params, inputs)
+        mu, log_sigma = self.encoder(train_state, params, inputs)
         r = random.normal(rng, (mu.shape[0], self.latent_dim))
         codes = mu + r * jnp.exp(log_sigma)
         codes = self.concat_conds(codes, conds)
-        reconst = train_state.apply_module('decoder', params, inputs)
+        reconst = self.decoder(train_state, params, inputs)
         reconst = reconst.reshape((-1, *self.input_shape))
         aux = {'image': inputs, 'label': conds, 'output': jnp.exp(reconst)}
         losses = {'reconst_loss': bce_loss(inputs, reconst), 
