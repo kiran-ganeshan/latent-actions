@@ -4,3 +4,6 @@
 [submodule "jaxrl"]
 	path = jaxrl
 	url = https://github.com/kiran-ganeshan/jaxrl.git
+[submodule "doodad"]
+	path = doodad
+	url = https://github.com/kiran-ganeshan/doodad.git
