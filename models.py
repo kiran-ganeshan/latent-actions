@@ -14,48 +14,10 @@ from utils import kl_loss, bce_loss, learner, submodule
 from modules import *
 from states import *
 from optax import adam
-
-
-
-
+    
+    
 @learner
-class Learner:
-    
-    @partial(jit, static_argnums=0)
-    def initial_state(self, total_steps, rng):
-        rngs = random.split(rng, len(self.submodules.items()))
-        optim = lambda: adam(decay(self.learning_rate, total_steps, self.lr_decay), self.beta1, self.beta2)
-        train_state = LearnerState()
-        for (name, module), rng in zip(self.submodules.items(), rngs):
-            train_state = train_state.add_module(name, module, module.input_shape, optim(), rng)
-        return train_state
-    
-    @partial(jit, static_argnums=0)
-    def train_step(self, train_state, rng, *data):
-        def loss_fn(params, rng):
-            losses, metrics, aux, new_vars = self.compute_loss(train_state, params, rng, *data, train=True)
-            loss = sum(losses.values())
-            return loss, {'metrics': {'loss': loss, **losses, **metrics}, 'new_vars': new_vars}
-        step_rng, rng = random.split(rng)
-        val_and_grad = value_and_grad(loss_fn, has_aux=True, argnums=0)
-        (loss, stats), grads = val_and_grad(train_state.get_params(), step_rng)
-        new_train_state = train_state.apply_gradients(grads, stats['new_vars'])
-        return new_train_state, rng, stats['metrics']
-    
-    def compute_loss(train_state, params, rng, *data, train=True):
-        pass
-    
-    @partial(jit, static_argnums=0)
-    def evaluate(self, train_state, rng, *data):
-        losses, metrics, aux, new_vars = self.compute_loss(train_state,
-                                                           train_state.get_params(),
-                                                           rng, *data, train=False)
-        metrics = {'loss': sum(losses.values()), **losses, **metrics}
-        return metrics, aux
-
-
-@learner
-class BaseVAELearner(Learner):
+class BaseVAELearner:
     cond_size : int
     input_size : int
     input_shape : Sequence[int]

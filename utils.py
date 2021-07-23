@@ -1,5 +1,5 @@
 import jax
-from jax import random, numpy as jnp
+from jax import random, numpy as jnp, jit, partial, value_and_grad
 import tensorflow_datasets as tfds
 import numpy as np
 import matplotlib
@@ -9,6 +9,8 @@ import gym
 import d4rl
 from typing import Callable
 from tqdm import tqdm
+from states import LearnerState
+from copy import deepcopy
 from math import exp, log, floor, pow
 
 matplotlib.use('agg')
@@ -250,4 +252,38 @@ def learner(cls):
             setattr(cls, f.__name__, mod)
     cls.submodule_funcs = modules
     cls.submodules = property(lambda self: {name: f(self) for name, f in self.submodule_funcs.items()})
-    return cls
+    
+    class Wrapper(cls):
+        
+        @partial(jit, static_argnums=0)
+        def __init__(self, optim, rng, *args, **kwargs):
+            super(cls, self).__init__(*args, **kwargs)
+            rngs = random.split(rng, len(self.submodules.items()))
+            train_state = LearnerState()
+            for (name, module), rng in zip(self.submodules.items(), rngs):
+                train_state = train_state.add_module(name, module, module.input_shape, deepcopy(optim), rng)
+            return train_state
+        
+        @partial(jit, static_argnums=0)
+        def train_step(self, train_state, rng, *data):
+            def loss_fn(params, rng):
+                losses, metrics, aux, new_vars = self.compute_loss(self.train_state, params, rng, *data, train=True)
+                loss = sum(losses.values())
+                return loss, {'metrics': {'loss': loss, **losses, **metrics}, 'new_vars': new_vars}
+            step_rng, rng = random.split(rng)
+            val_and_grad = value_and_grad(loss_fn, has_aux=True, argnums=0)
+            (loss, stats), grads = val_and_grad(train_state.get_params(), step_rng)
+            new_train_state = train_state.apply_gradients(grads, stats['new_vars'])
+            return new_train_state, rng, stats['metrics']
+        
+        def compute_loss(train_state, params, rng, *data, train=True):
+            pass
+        
+        @partial(jit, static_argnums=0)
+        def evaluate(self, train_state, rng, *data):
+            losses, metrics, aux, new_vars = self.compute_loss(train_state,
+                                                            train_state.get_params(),
+                                                            rng, *data, train=False)
+            metrics = {'loss': sum(losses.values()), **losses, **metrics}
+            return metrics, aux
+    return Wrapper

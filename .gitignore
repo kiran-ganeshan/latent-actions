@@ -1,7 +1,8 @@
-__pycache__/
-tmp/
+*__pycache__/
+*tmp/
 flax_vae/results/
 *.swp
-.vscode/
+.vscode*
 remote/
-wandb/
+*wandb/
+*.hdf5

@@ -1,3 +1,7 @@
 {
     "python.pythonPath": "/opt/anaconda3/envs/lat-act/bin/python"
+    "python.autoComplete.extraPaths": ["/Users/kiranganeshan/latent-actions/", 
+                                       "/Users/kiranganeshan/latent-actions/d4rl_evaluations", 
+                                       "/Users/kiranganeshan/latent-actions/BCQ",
+                                       "/Users/kiranganeshan/latent-actions/doodad"]
 }

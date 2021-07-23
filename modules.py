@@ -185,6 +185,10 @@ class Quantizer(nn.Module):
     embedding_dim : int = 10
     num_embeddings : int = 10
     commitment_cost : float = 0.25
+    
+    @property
+    def input_shape(self):
+        return (self.num_embeddings, self.embedding_dim)
 
     @nn.compact
     def __call__(self, x, train=True):

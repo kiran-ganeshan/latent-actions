@@ -1,0 +1,20 @@
+MuJoCo Pro Personal license activation key, number 76996, type 6.
+
+Issued to Kiran Ganeshan <kg23@berkeley.edu>.
+
+Expires February 9, 2022.
+
+This file activates MuJoCo Pro on a single computer with id:
+OSX_560LESSDPPPG9AM_C02H12061WZLXK61A198
+
+Do not modify this file. Its entire content, including the
+plain text section, is used by the activation manager.
+
+28fb1572dd12dc949d6f6744d1397514e1e219966892dd204f34537f80499cc8
+9b253b81fd916c5497fe9c908f5e96ac28b8c9e05bbb4eda08c6920540c6013b
+d63532acd52e2b3d9f4c61b93b50c1eea85778195be72cc9476babc76d550f7f
+b7455cdf889612feb160293ca92c6c74a256a4c822e20d19a7824f374f12110c
+ac34e13678269fc6e8e5f8eb2ea802d3cbbcf5d2702beb42fefa465da105bd40
+607c31a439414c1e0ff5a07869c3a3ffee0396bef528d09111f3f66930fdfdc9
+ad0892f4fbca9b4172163e7d8c21639f31f2f7f2116d60249c0e4e527f6a185f
+56a85498ae4bc7be790c385232a7eb553c77dfc573e0267f76b4cdcb4062e0bf
