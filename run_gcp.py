@@ -33,11 +33,10 @@ def run(N, seed, name, flags):
     repo = '/code/d4rl_evaluations/'
     redirects = '>> /output/output.log 2> /output/error.log'
     flags = (" " if len(flags) != 0 else "") + " ".join(flags)
-    cmd = f"export D4RL_DATASET_DIR='/d4rl';\n"
-    cmd += f"cd /code;\npython move_mjkey.py {redirects};\ncd {repo}{name};\n"
+    cmd = f"cd /code;\npython move_mjkey.py {redirects};\ncd {repo}{name};\n"
     for s in range(int(seed), int(seed) + int(N)):
-        cmd += f"python main.py{flags} --seed {s} {redirects};\n"
-    #cmd = "source ~/.bashrc; which conda >> /output/output.log"
+        cmd += f"D4RL_DATASET_DIR=/d4rl python main.py{flags} --seed {s} {redirects};\n"
+    cmd = "cd {repo}{name};\npython test.py >> /output/output.log 2> /output/error.log"
     print("running command:\n{}".format(cmd))
     launcher = GCPMode(
         gcp_bucket=GCP_BUCKET,
