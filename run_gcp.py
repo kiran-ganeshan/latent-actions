@@ -26,12 +26,17 @@ def run(N, seed, name, flags):
     code_mount2 = MountLocal(
         local_dir='~/latent-actions/doodad',
         mount_point='/code/doodad', pythonpath=True)
-    mounts = [local_mount, gcp_mount, code_mount1, code_mount2]
+    code_mount3 = MountLocal(
+        local_dir='~/.d4rl/datasets',
+        mount_point='/d4rl')
+    mounts = [local_mount, gcp_mount, code_mount1, code_mount2, code_mount3]
     repo = '/code/d4rl_evaluations/'
+    redirects = '>> /output/output.log 2> /output/error.log'
     flags = (" " if len(flags) != 0 else "") + " ".join(flags)
-    cmd = f"cd /code;\npython move_mjkey.py;\ncd {repo}{name};\n"
+    cmd = f"export D4RL_DATASET_DIR='/d4rl';\n"
+    cmd += f"cd /code;\npython move_mjkey.py {redirects};\ncd {repo}{name};\n"
     for s in range(int(seed), int(seed) + int(N)):
-        cmd += f"python main.py{flags} --seed {s} >> /outputoutput.log 2> /output/error.log;\n"
+        cmd += f"python main.py{flags} --seed {s} {redirects};\n"
     #cmd = "source ~/.bashrc; which conda >> /output/output.log"
     print("running command:\n{}".format(cmd))
     launcher = GCPMode(
@@ -52,4 +57,7 @@ def run(N, seed, name, flags):
     )
 
 if __name__ == '__main__':
-    run(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:])
+    if len(sys.argv) < 4:
+        print("Usage: python run_gcp.py {num runs} {seed} {name} --flag value --flag value ...")
+    else:
+        run(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:])

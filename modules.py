@@ -156,7 +156,7 @@ class CondMaskedMLP(MaskedMLP):
         return x
     
     
-class DoubleQDecoder(nn.Module):
+class DoubleQDecoder(Module):
     
     input_size : int
     model_name : str = 'double_clipped_q'
@@ -181,7 +181,7 @@ class DoubleQDecoder(nn.Module):
         return jnp.concatenate([x, y], axis=-1)
     
     
-class Quantizer(nn.Module):
+class Quantizer(Module):
     embedding_dim : int = 10
     num_embeddings : int = 10
     commitment_cost : float = 0.25
@@ -218,7 +218,7 @@ class Quantizer(nn.Module):
         return quantized, loss, aux
     
     
-class KMeansQuantizer(nn.Module):
+class KMeansQuantizer(Module):
     embedding_dim : int = 10
     num_embeddings : int = 10
     commitment_cost : float = 0.25
