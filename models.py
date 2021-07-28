@@ -10,9 +10,8 @@ from jax.nn import one_hot
 from tqdm import tqdm
 from flax.struct import dataclass
 from typing import Sequence
-from utils import kl_loss, bce_loss, learner, submodule
+from utils import *
 from modules import *
-from states import *
 from optax import adam
     
     

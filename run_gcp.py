@@ -35,8 +35,8 @@ def run(N, seed, name, flags):
     flags = (" " if len(flags) != 0 else "") + " ".join(flags)
     cmd = f"cd /code;\npython move_mjkey.py {redirects};\ncd {repo}{name};\n"
     for s in range(int(seed), int(seed) + int(N)):
-        cmd += f"D4RL_DATASET_DIR=/d4rl python main.py{flags} --seed {s} {redirects};\n"
-    cmd = "cd {repo}{name};\npython test.py >> /output/output.log 2> /output/error.log"
+        cmd += f"python main.py{flags} --seed {s} {redirects};\n"
+    cmd = f"cd /code;\npython test.py {redirects}"
     print("running command:\n{}".format(cmd))
     launcher = GCPMode(
         gcp_bucket=GCP_BUCKET,
@@ -48,7 +48,7 @@ def run(N, seed, name, flags):
         gcp_image_project=GCP_PROJECT
     )
     doodad.run_command(
-        docker_image='ikostrikov/ml_cpu:latest',
+        docker_image='kbganeshan/ml_cpu:latest',
         command=cmd,
         mode=launcher,
         mounts=mounts,

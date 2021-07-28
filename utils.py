@@ -1,5 +1,9 @@
 import jax
 from jax import random, numpy as jnp, jit, partial, value_and_grad
+from jax.nn import log_softmax, one_hot
+from flax.struct import dataclass
+from flax.training.train_state import TrainState
+from flax.core.frozen_dict import FrozenDict
 import tensorflow_datasets as tfds
 import numpy as np
 import matplotlib
@@ -7,9 +11,9 @@ import matplotlib.pyplot as plt
 import wandb
 import gym
 import d4rl
-from typing import Callable
+from typing import Callable, Sequence
 from tqdm import tqdm
-from states import LearnerState
+from modules import MLP, Encoder
 from copy import deepcopy
 from math import exp, log, floor, pow
 
@@ -238,52 +242,149 @@ def make_grid_config(param_scales, params, N):
     return grid_config
 '''
 
+
 def submodule(method):
     method.is_submodule = True
     return property(method)
 
 
 def learner(cls):
-    modules = getattr(cls, "submodules", {})
+    modules = getattr(cls, "submodule_funcs", {})
     for f in cls.__dict__.values():
         if isinstance(f, Callable) and getattr(f, "is_submodule", False):
             modules[f.__name__] = f
             mod = lambda self, ts, params, *args, **kwargs: ts.apply_module(f.__name__, params, *args, **kwargs)
             setattr(cls, f.__name__, mod)
-    cls.submodule_funcs = modules
-    cls.submodules = property(lambda self: {name: f(self) for name, f in self.submodule_funcs.items()})
+    cls.submodule_outputs = lambda self: {name: f(self) for name, f in modules}
+    cls = dataclass(cls)
     
+    @dataclass
     class Wrapper(cls):
+        train_state : LearnerState = None
+        
+        def __init__(self, rng, *args, **kwargs):
+            super(Wrapper, self).__init__(*args, **kwargs)
+            train_state = LearnerState.create(cls.submodule_outputs(self), rng)
+            object.__setattr__(self, 'train_state', train_state)
+            for name in cls.submodule_outputs(self).keys():
+                func = lambda self, params, *x: self.train_state.apply_module(name, params, *x)
+                setattr(cls, name, func)
         
         @partial(jit, static_argnums=0)
-        def __init__(self, optim, rng, *args, **kwargs):
-            super(cls, self).__init__(*args, **kwargs)
-            rngs = random.split(rng, len(self.submodules.items()))
-            train_state = LearnerState()
-            for (name, module), rng in zip(self.submodules.items(), rngs):
-                train_state = train_state.add_module(name, module, module.input_shape, deepcopy(optim), rng)
-            return train_state
-        
-        @partial(jit, static_argnums=0)
-        def train_step(self, train_state, rng, *data):
+        def train_step(self, rng, *data):
             def loss_fn(params, rng):
-                losses, metrics, aux, new_vars = self.compute_loss(self.train_state, params, rng, *data, train=True)
+                print(data)
+                losses, metrics, aux, new_vars = self.compute_loss(params, rng, *data, train=True)
                 loss = sum(losses.values())
-                return loss, {'metrics': {'loss': loss, **losses, **metrics}, 'new_vars': new_vars}
+                return loss, {'new_vars': new_vars, 'info': {'loss': loss, **losses, **metrics}}
             step_rng, rng = random.split(rng)
             val_and_grad = value_and_grad(loss_fn, has_aux=True, argnums=0)
-            (loss, stats), grads = val_and_grad(train_state.get_params(), step_rng)
-            new_train_state = train_state.apply_gradients(grads, stats['new_vars'])
-            return new_train_state, rng, stats['metrics']
+            (loss, stats), grads = val_and_grad(self.train_state.get_params(), step_rng)
+            new_train_state = self.train_state.apply_gradients(grads, stats['new_vars'])
+            return self.replace(train_state=new_train_state), rng, stats['info']
         
-        def compute_loss(train_state, params, rng, *data, train=True):
+        def compute_loss(self, params, rng, *data, train):
             pass
         
+        def eval_loss(self, rng, *data):
+            return self.compute_loss(self.train_state.get_params(), rng, *data, train=False)
+        
         @partial(jit, static_argnums=0)
-        def evaluate(self, train_state, rng, *data):
-            losses, metrics, aux, new_vars = self.compute_loss(train_state,
-                                                            train_state.get_params(),
-                                                            rng, *data, train=False)
+        def evaluate(self, rng, *data):
+            losses, metrics, aux = self.eval_loss(rng, *data)
             metrics = {'loss': sum(losses.values()), **losses, **metrics}
             return metrics, aux
+        
     return Wrapper
+
+
+class TrainState(TrainState):
+    batch_stats : FrozenDict[str, any]
+        
+
+@dataclass
+class LearnerState:
+    states : FrozenDict[str, TrainState]
+    mutable : FrozenDict[str, Sequence[str]]
+    step : int
+    
+    @classmethod
+    def create(cls, modules, rng):
+        rngs = random.split(rng, len(modules.items()))
+        states, mutable = dict(), dict()
+        for i, (name, tup) in enumerate(modules.items()):
+            module, input_shape, optim = tup
+            params = module.init(rngs[i], jnp.ones((10,) + input_shape, jnp.float32))
+            states[name] = TrainState.create(apply_fn=module.apply, 
+                                             params=params, 
+                                             tx=optim, 
+                                             batch_stats={})
+            mutable[name] = [col for col in params.keys() 
+                             if module.bind(params).is_mutable_collection(col)]
+        return LearnerState(states=FrozenDict(states), mutable=FrozenDict(mutable), step=0)
+    
+    def apply_module(self, name, params, *x):
+        out, new_vars = self.states[name].apply_fn(params[name], *x, mutable=self.mutable[name])
+        return out, params.copy(add_or_replace=new_vars)
+    
+    def get_params(self):
+        return {name: state.params for name, state in self.states.items()}
+    
+    def apply_gradients(self, grads, new_vars):
+        new_states = {name: state.apply_gradients(grads=grads[name]) 
+                      for name, state in self.states.items()}
+        #new_states = {name: state.replace(params=state.params.copy(new_vars)) 
+        #              for name, state in new_states.items()}
+        return LearnerState(states=new_states, step=self.step + 1)
+    
+
+@learner
+class Classifier:
+    input_size : int = 784
+    num_labels : int = 10
+    
+    @submodule
+    def classifier(self):
+        encoder = MLP(input_size=self.input_size,
+                      output_size=self.num_labels,
+                      hidden_sizes=(500, 500),
+                      activation=log_softmax)
+        return encoder, (self.input_size,), adam(1e-4, 0.9, 0.999)
+        
+    def compute_loss(self, params, rng, *data, train=True):
+        inputs, labels = data
+        preds = self.classifier(params, inputs) 
+        return bce_loss(preds, one_hot(labels, self.num_labels)), {}, {}, {}
+    
+    
+from optax import adam
+train_ds, test_ds = get_mnist_datasets(binarized=True)
+epochs = 20
+batch_size = 60
+seed = 0
+test_interval = 5
+dataset_len = train_ds['image'].shape[0]
+rng, init_rng = random.split(random.PRNGKey(seed))
+coder = Classifier(init_rng)
+steps_per_epoch = dataset_len // batch_size
+for epoch in range(epochs):
+    rng, step_rng, shuffle_rng = random.split(rng, 3)
+    perms = jax.random.permutation(shuffle_rng, dataset_len)
+    perms = perms[:steps_per_epoch * batch_size].reshape((steps_per_epoch, batch_size))
+    batch_metrics = list()
+    for perm in tqdm(perms):
+        batch_data = (train_ds['image'], train_ds['label'])
+        coder, rng, metrics = coder.train_step(step_rng, *batch_data)
+        batch_metrics.append(metrics)
+    batch_metrics_np = jax.device_get(batch_metrics)
+    epoch_metrics_np = {metric: np.mean([metrics[metric] for metrics in batch_metrics_np])
+                        for metric in batch_metrics_np[0]}
+    write_summary(epoch_metrics_np, True)
+    if (epoch + 1) % test_interval == 0 or epoch == epochs - 1:
+        rng, eval_rng = random.split(rng)
+        batch_data = tuple([obj[perm, ...] for obj in test_ds])
+        eval_metrics, eval_data = coder.evaluate(state, eval_rng, *batch_data)
+        eval_metrics_np, eval_data_np = jax.device_get(eval_metrics), jax.device_get(eval_data)
+        write_summary(eval_metrics_np, False)
+        write_data(eval_data_np, False)
+    state = state.next_epoch()
