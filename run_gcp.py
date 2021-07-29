@@ -11,7 +11,7 @@ Example: To run d4rl_evaluations/bcq 10 times on seed 100000 with flags {env: ha
 python run_gcp.py 10 100000 bcq --env halfcheetah --tau 0.5
 '''
 
-def run(N, seed, name, flags):
+def run(seed, name, flags):
     
     local_mount = MountLocal(
         local_dir=TESTING_DIR,
@@ -31,18 +31,18 @@ def run(N, seed, name, flags):
         mount_point='/d4rl')
     mounts = [local_mount, gcp_mount, code_mount1, code_mount2, code_mount3]
     repo = '/code/d4rl_evaluations/'
-    redirects = '>> /output/output.log 2> /output/error.log'
+    redirects = '>> /output/output.log 2>> /output/error.log'
     flags = (" " if len(flags) != 0 else "") + " ".join(flags)
-    cmd = f"cd /code;\npython move_mjkey.py {redirects};\ncd {repo}{name};\n"
-    for s in range(int(seed), int(seed) + int(N)):
-        cmd += f"python main.py{flags} --seed {s} {redirects};\n"
-    cmd = f"cd /code;\npython test.py {redirects}"
+    cmd = f"cd /code;\n"
+    cmd += f"python move_mjkey.py {redirects};\ncd {repo}{name};\n"
+    cmd += f"python main.py{flags} --seed {seed} {redirects};\n"
+    cmd = f"pip list | grep mujoco-py {redirects};cd /code;\npython test.py {redirects}"
     print("running command:\n{}".format(cmd))
     launcher = GCPMode(
         gcp_bucket=GCP_BUCKET,
         gcp_log_path='latent-actions',
         gcp_project=GCP_PROJECT,
-        instance_type='e2-medium',
+        instance_type='e2-standard-2',
         zone='us-west1-a',
         gcp_image=GCP_IMAGE,
         gcp_image_project=GCP_PROJECT
@@ -59,4 +59,4 @@ if __name__ == '__main__':
     if len(sys.argv) < 4:
         print("Usage: python run_gcp.py {num runs} {seed} {name} --flag value --flag value ...")
     else:
-        run(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:])
+        run(sys.argv[1], sys.argv[2], sys.argv[3:])

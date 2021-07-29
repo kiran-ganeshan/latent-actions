@@ -1,11 +1,23 @@
-print("starting mujoco-py import", flush=True)
+print("started bcq imports", flush=True)
+import argparse
+print("started mujoco_py import", flush=True)
 import mujoco_py
-print("finishing mujoco-py import, starting gym import", flush=True)
+print("finished mujoco_py import", flush=True)
+print("started gym import", flush=True)
 import gym
-print("finishing gym import, starting gym.make", flush=True)
-env = gym.make('HalfCheetah-v2')
-print("finishing gym.make, starting env.reset", flush=True)
-env.reset()
-print("finishing env.reset, starting d4rl import", flush=True)
+print("finished gym import", flush=True)
+import numpy as np
+import os
+
+os.system("pip list | grep mujoco-py ")
+
+print("started torch import", flush=True)
+import torch
+print("finished torch import", flush=True)
+#import wandb
+print("started d4rl import", flush=True)
 import d4rl
-print("finishing d4rl import, script complete", flush=True)
+print("finished d4rl import", flush=True)
+import uuid
+import json
+print("finished non-model bcq imports", flush=True)

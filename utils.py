@@ -245,7 +245,7 @@ def make_grid_config(param_scales, params, N):
 
 def submodule(method):
     method.is_submodule = True
-    return property(method)
+    return method
 
 
 def learner(cls):
@@ -253,38 +253,43 @@ def learner(cls):
     for f in cls.__dict__.values():
         if isinstance(f, Callable) and getattr(f, "is_submodule", False):
             modules[f.__name__] = f
-            mod = lambda self, ts, params, *args, **kwargs: ts.apply_module(f.__name__, params, *args, **kwargs)
-            setattr(cls, f.__name__, mod)
-    cls.submodule_outputs = lambda self: {name: f(self) for name, f in modules}
+    cls.submodule_outputs = lambda self: {name: f(self) for name, f in modules.items()}
+    @partial(jit, static_argnums=0)
+    def _train_step(model, train_state, rng, *data):
+        def loss_fn(params, rng):
+            losses, metrics, aux, new_vars = model.compute_loss(params, rng, *data, train=True)
+            loss = sum(losses.values())
+            return loss, {'new_vars': new_vars, 'info': {'loss': loss, **losses, **metrics}}
+        step_rng, rng = random.split(rng)
+        val_and_grad = value_and_grad(loss_fn, has_aux=True, argnums=0)
+        (loss, stats), grads = val_and_grad(train_state.get_params(), step_rng)
+        new_train_state = train_state.apply_gradients(grads, stats['new_vars'])
+        return new_train_state, rng, stats['info']
+    func = lambda self, train_state, rng, *data: _train_step(self, train_state, rng, *data)
+    setattr(cls, 'train_step', func)
     cls = dataclass(cls)
     
     @dataclass
-    class Wrapper(cls):
+    class Wrapper:
+        model : cls
         train_state : LearnerState = None
         
-        def __init__(self, rng, *args, **kwargs):
-            super(Wrapper, self).__init__(*args, **kwargs)
-            train_state = LearnerState.create(cls.submodule_outputs(self), rng)
+        def __new__(cls, rng, *args, train_state=None, **kwargs):
+            wrapper = super()
+            if train_state is None:
+                object.__setattr__(self, 'model', cls(*args, **kwargs))
+                train_state = LearnerState.create(cls.submodule_outputs(self.model), rng)
+                for name in cls.submodule_outputs(self).keys():
+                    func = lambda params, *x: self.train_state.apply_module(name, params, *x)
+                    object.__setattr__(self.model, name, func)
             object.__setattr__(self, 'train_state', train_state)
-            for name in cls.submodule_outputs(self).keys():
-                func = lambda self, params, *x: self.train_state.apply_module(name, params, *x)
-                setattr(cls, name, func)
-        
-        @partial(jit, static_argnums=0)
+            
+        def __getattr__(self, name):
+            return object.__getattribute__(self.model, name)
+            
         def train_step(self, rng, *data):
-            def loss_fn(params, rng):
-                print(data)
-                losses, metrics, aux, new_vars = self.compute_loss(params, rng, *data, train=True)
-                loss = sum(losses.values())
-                return loss, {'new_vars': new_vars, 'info': {'loss': loss, **losses, **metrics}}
-            step_rng, rng = random.split(rng)
-            val_and_grad = value_and_grad(loss_fn, has_aux=True, argnums=0)
-            (loss, stats), grads = val_and_grad(self.train_state.get_params(), step_rng)
-            new_train_state = self.train_state.apply_gradients(grads, stats['new_vars'])
-            return self.replace(train_state=new_train_state), rng, stats['info']
-        
-        def compute_loss(self, params, rng, *data, train):
-            pass
+            new_state, rng, info = self.model.train_step(self.train_state, rng, *data)
+            return self.replace(train_state=new_state), rng, info
         
         def eval_loss(self, rng, *data):
             return self.compute_loss(self.train_state.get_params(), rng, *data, train=False)
@@ -325,17 +330,17 @@ class LearnerState:
     
     def apply_module(self, name, params, *x):
         out, new_vars = self.states[name].apply_fn(params[name], *x, mutable=self.mutable[name])
-        return out, params.copy(add_or_replace=new_vars)
+        return out, params.copy(add_or_replace={name: params[name].copy(add_or_replace=new_vars)})
     
     def get_params(self):
-        return {name: state.params for name, state in self.states.items()}
+        return FrozenDict({name: state.params for name, state in self.states.items()})
     
     def apply_gradients(self, grads, new_vars):
         new_states = {name: state.apply_gradients(grads=grads[name]) 
                       for name, state in self.states.items()}
         #new_states = {name: state.replace(params=state.params.copy(new_vars)) 
         #              for name, state in new_states.items()}
-        return LearnerState(states=new_states, step=self.step + 1)
+        return LearnerState(states=new_states, mutable=self.mutable, step=self.step + 1)
     
 
 @learner
@@ -353,8 +358,8 @@ class Classifier:
         
     def compute_loss(self, params, rng, *data, train=True):
         inputs, labels = data
-        preds = self.classifier(params, inputs) 
-        return bce_loss(preds, one_hot(labels, self.num_labels)), {}, {}, {}
+        preds, params = self.classifier(params, inputs) 
+        return {'loss': bce_loss(preds, one_hot(labels, self.num_labels))}, {}, {}, params
     
     
 from optax import adam
