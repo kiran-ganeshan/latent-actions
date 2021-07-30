@@ -12,7 +12,7 @@ python run_gcp.py 10 100000 bcq --env halfcheetah --tau 0.5
 '''
 
 def run(seed, name, flags):
-    
+    repo = 'd4rl_evaluations'
     local_mount = MountLocal(
         local_dir=TESTING_DIR,
         mount_point='/data',
@@ -21,34 +21,28 @@ def run(seed, name, flags):
         gcp_path=os.path.join(name, f'seed{seed}'),
         mount_point=f'/output')
     code_mount1 = MountLocal(
-        local_dir='~/latent-actions',
+        local_dir=f'~/latent-actions/{repo}/{name}',
         mount_point='/code', pythonpath=True)
     code_mount2 = MountLocal(
-        local_dir='~/latent-actions/doodad',
-        mount_point='/code/doodad', pythonpath=True)
-    code_mount3 = MountLocal(
         local_dir='~/.d4rl/datasets',
         mount_point='/d4rl')
-    mounts = [local_mount, gcp_mount, code_mount1, code_mount2, code_mount3]
-    repo = '/code/d4rl_evaluations/'
-    redirects = '>> /output/output.log 2>> /output/error.log'
+    mounts = [local_mount, gcp_mount, code_mount1, code_mount2]
+    redirects = '> /output/output.log 2> /output/error.log'
     flags = (" " if len(flags) != 0 else "") + " ".join(flags)
-    cmd = f"cd /code;\n"
-    cmd += f"python move_mjkey.py {redirects};\ncd {repo}{name};\n"
-    cmd += f"python main.py{flags} --seed {seed} {redirects};\n"
-    cmd = f"pip list | grep mujoco-py {redirects};cd /code;\npython test.py {redirects}"
-    print("running command:\n{}".format(cmd))
+    cmd = f"cd /code {redirects};\npython main.py{flags} --seed {seed} {redirects}"
+    #cmd = f"pip list | grep mujoco-py {redirects};cd /code;\npython test.py {redirects}"
+    print(f"running command:\n{cmd}")
     launcher = GCPMode(
         gcp_bucket=GCP_BUCKET,
         gcp_log_path='latent-actions',
         gcp_project=GCP_PROJECT,
-        instance_type='e2-standard-2',
-        zone='us-west1-a',
+        instance_type='n2-standard-4',
+        zone='us-west4-b',
         gcp_image=GCP_IMAGE,
         gcp_image_project=GCP_PROJECT
     )
     doodad.run_command(
-        docker_image='kbganeshan/ml_cpu:latest',
+        docker_image='ikostrikov/ml_cpu_new:latest',
         command=cmd,
         mode=launcher,
         mounts=mounts,
@@ -59,4 +53,5 @@ if __name__ == '__main__':
     if len(sys.argv) < 4:
         print("Usage: python run_gcp.py {num runs} {seed} {name} --flag value --flag value ...")
     else:
-        run(sys.argv[1], sys.argv[2], sys.argv[3:])
+        for i in range(int(sys.argv[1])):
+            run(str(int(sys.argv[2]) + i), sys.argv[3], sys.argv[4:])

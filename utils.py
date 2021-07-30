@@ -2,6 +2,7 @@ import jax
 from jax import random, numpy as jnp, jit, partial, value_and_grad
 from jax.nn import log_softmax, one_hot
 from flax.struct import dataclass
+from dataclasses import dataclass as dc
 from flax.training.train_state import TrainState
 from flax.core.frozen_dict import FrozenDict
 import tensorflow_datasets as tfds
@@ -199,48 +200,6 @@ def write_data(data, train=False):
         scatter = scatter_plot(data['latents'], data['centers'])
         wandb_metrics[wandb_img_str + "embeddings"] = wandb.Image(scatter)
     wandb.log(wandb_metrics)
-    
-'''    
-class Scaling(Enum):
-    'UNIF' = 1              # uniform distribution between two floats
-    'EXP' = 2               # exponential distribution between two floats
-    'LOG' = 3               # logarithmic distribution between two floats
-    'NEGEXP' = 4            # negative exponential distribution between two floats
-    'INTUNIF' = 5           # int-uniform distribution between two ints
-        
-        
-def make_scale(hyperparam_scales, param_name, min, max, n):
-    assert param_name in hyperparam_scales.keys()
-    try:
-        scaling = hyperparam_scales[param_name]
-    except KeyError:
-        print("Must add " + param_name + " to hyperparameter scaling dictionary.")
-    if scaling == Scaling.UNIF:
-        return [i * (max - min) / (n - 1) + min for i in range(n)]
-    elif scaling == Scaling.EXP:
-        return [min * exp(i / (n - 1) * log(max/min)) for i in range(n)]
-    elif scaling == Scaling.LOG:
-        return [min * log(i / (n - 1) * exp(max/min)) for i in range(n)]
-    elif scaling == Scaling.NEGEXP:
-        return [max * exp(i / (n - 1) * log(min/max)) for i in range(n)]
-    elif scaling == Scaling.INTUNIF:
-        return [int(i  * (int(max) - int(min)) / (n - 1) + int(min)) for i in range(n)]
-
-    
-    
-def make_grid_config(param_scales, params, N):
-    grid_config = dict()
-    for param_name, vals in params.items():
-        if 'values' in vals.keys():
-            grid_config[param_name] = vals['values']
-            N = floor(N / len(vals['values']))
-            del vals['values']
-    for param_name, vals in params.items():
-        n = floor(pow(N, 1.0 / len(params.items())))
-        assert 'min' in vals.keys() and 'max' in vals.keys()
-        grid_config[param_name] = make_scale(param_scales, param_name, vals['min'], vals['max'], n)
-    return grid_config
-'''
 
 
 def submodule(method):
@@ -253,52 +212,19 @@ def learner(cls):
     for f in cls.__dict__.values():
         if isinstance(f, Callable) and getattr(f, "is_submodule", False):
             modules[f.__name__] = f
-    cls.submodule_outputs = lambda self: {name: f(self) for name, f in modules.items()}
-    @partial(jit, static_argnums=0)
-    def _train_step(model, train_state, rng, *data):
-        def loss_fn(params, rng):
-            losses, metrics, aux, new_vars = model.compute_loss(params, rng, *data, train=True)
-            loss = sum(losses.values())
-            return loss, {'new_vars': new_vars, 'info': {'loss': loss, **losses, **metrics}}
-        step_rng, rng = random.split(rng)
-        val_and_grad = value_and_grad(loss_fn, has_aux=True, argnums=0)
-        (loss, stats), grads = val_and_grad(train_state.get_params(), step_rng)
-        new_train_state = train_state.apply_gradients(grads, stats['new_vars'])
-        return new_train_state, rng, stats['info']
-    func = lambda self, train_state, rng, *data: _train_step(self, train_state, rng, *data)
-    setattr(cls, 'train_step', func)
+    cls._submodule_outputs = lambda self: {name: f(self) for name, f in modules.items()}
     cls = dataclass(cls)
     
     @dataclass
-    class Wrapper:
-        model : cls
-        train_state : LearnerState = None
+    class Wrapper(cls):
         
-        def __new__(cls, rng, *args, train_state=None, **kwargs):
-            wrapper = super()
-            if train_state is None:
-                object.__setattr__(self, 'model', cls(*args, **kwargs))
-                train_state = LearnerState.create(cls.submodule_outputs(self.model), rng)
-                for name in cls.submodule_outputs(self).keys():
-                    func = lambda params, *x: self.train_state.apply_module(name, params, *x)
-                    object.__setattr__(self.model, name, func)
-            object.__setattr__(self, 'train_state', train_state)
-            
-        def __getattr__(self, name):
-            return object.__getattribute__(self.model, name)
-            
-        def train_step(self, rng, *data):
-            new_state, rng, info = self.model.train_step(self.train_state, rng, *data)
-            return self.replace(train_state=new_state), rng, info
-        
-        def eval_loss(self, rng, *data):
-            return self.compute_loss(self.train_state.get_params(), rng, *data, train=False)
-        
-        @partial(jit, static_argnums=0)
-        def evaluate(self, rng, *data):
-            losses, metrics, aux = self.eval_loss(rng, *data)
-            metrics = {'loss': sum(losses.values()), **losses, **metrics}
-            return metrics, aux
+        def __new__(self, rng, *args, **kwargs):
+            model = cls(*args, **kwargs)
+            train_state = LearnerState.create(cls._submodule_outputs(model), rng)
+            for name in cls._submodule_outputs(model).keys():
+                func = lambda ts, params, *x: ts.apply_module(name, params, *x)
+                object.__setattr__(model, name, func)
+            return model, train_state
         
     return Wrapper
 
@@ -306,7 +232,6 @@ def learner(cls):
 class TrainState(TrainState):
     batch_stats : FrozenDict[str, any]
         
-
 @dataclass
 class LearnerState:
     states : FrozenDict[str, TrainState]
@@ -328,6 +253,7 @@ class LearnerState:
                              if module.bind(params).is_mutable_collection(col)]
         return LearnerState(states=FrozenDict(states), mutable=FrozenDict(mutable), step=0)
     
+    @partial(jit, static_argnums=1)
     def apply_module(self, name, params, *x):
         out, new_vars = self.states[name].apply_fn(params[name], *x, mutable=self.mutable[name])
         return out, params.copy(add_or_replace={name: params[name].copy(add_or_replace=new_vars)})
@@ -338,9 +264,9 @@ class LearnerState:
     def apply_gradients(self, grads, new_vars):
         new_states = {name: state.apply_gradients(grads=grads[name]) 
                       for name, state in self.states.items()}
-        #new_states = {name: state.replace(params=state.params.copy(new_vars)) 
-        #              for name, state in new_states.items()}
-        return LearnerState(states=new_states, mutable=self.mutable, step=self.step + 1)
+        new_states = {name: state.replace(params=state.params.copy(new_vars)) 
+                      for name, state in new_states.items()}
+        return self.replace(states=new_states, step=self.step + 1)
     
 
 @learner
@@ -356,12 +282,24 @@ class Classifier:
                       activation=log_softmax)
         return encoder, (self.input_size,), adam(1e-4, 0.9, 0.999)
         
-    def compute_loss(self, params, rng, *data, train=True):
+    def compute_loss(self, ts, params, rng, *data, train=True):
         inputs, labels = data
-        preds, params = self.classifier(params, inputs) 
+        preds, params = self.classifier(ts, params, inputs) 
         return {'loss': bce_loss(preds, one_hot(labels, self.num_labels))}, {}, {}, params
     
     
+@partial(jit, static_argnums=0)
+def train_step(coder, train_state, rng, *data):
+    def loss_fn(params, rng):
+        losses, metrics, aux, new_vars = coder.compute_loss(train_state, params, rng, *data, train=True)
+        loss = sum(losses.values())
+        return loss, {'new_vars': new_vars, 'info': {'loss': loss, **losses, **metrics}}
+    step_rng, rng = random.split(rng)
+    val_and_grad = value_and_grad(loss_fn, has_aux=True, argnums=0)
+    (loss, stats), grads = val_and_grad(train_state.get_params(), step_rng)
+    new_train_state = train_state.apply_gradients(grads, stats['new_vars'])
+    return new_train_state, rng, stats['info']
+
 from optax import adam
 train_ds, test_ds = get_mnist_datasets(binarized=True)
 epochs = 20
@@ -370,7 +308,7 @@ seed = 0
 test_interval = 5
 dataset_len = train_ds['image'].shape[0]
 rng, init_rng = random.split(random.PRNGKey(seed))
-coder = Classifier(init_rng)
+coder, state = Classifier(init_rng)
 steps_per_epoch = dataset_len // batch_size
 for epoch in range(epochs):
     rng, step_rng, shuffle_rng = random.split(rng, 3)
@@ -379,7 +317,7 @@ for epoch in range(epochs):
     batch_metrics = list()
     for perm in tqdm(perms):
         batch_data = (train_ds['image'], train_ds['label'])
-        coder, rng, metrics = coder.train_step(step_rng, *batch_data)
+        state, rng, metrics = train_step(coder, state, step_rng, *batch_data)
         batch_metrics.append(metrics)
     batch_metrics_np = jax.device_get(batch_metrics)
     epoch_metrics_np = {metric: np.mean([metrics[metric] for metrics in batch_metrics_np])

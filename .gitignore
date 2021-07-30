@@ -3,6 +3,5 @@
 flax_vae/results/
 *.swp
 .vscode*
-remote/
 *wandb/
 *.hdf5
