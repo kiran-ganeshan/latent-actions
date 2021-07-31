@@ -17,6 +17,7 @@ from tqdm import tqdm
 from modules import MLP, Encoder
 from copy import deepcopy
 from math import exp, log, floor, pow
+from optax import adam
 
 matplotlib.use('agg')
 
@@ -163,7 +164,7 @@ def scatter_plot(points, centers):
     plt.scatter(centers[:, 0], centers[:, 1], s=50, c='blue')
     return plot_to_image(figure)
 
-def write_summary(metrics, train=False, made_coeff=None):
+def write_summary(metrics, train=False, log_wandb=True, made_coeff=None):
     wandb_metrics = dict()
     if 'made_loss' in metrics and not made_coeff is None:
         agg_metrics = {'loss': metrics['loss'] + metrics['made_loss']}
@@ -172,7 +173,8 @@ def write_summary(metrics, train=False, made_coeff=None):
     for metric, value in metrics.items():
         metric_str = ("train" if train else "test") + "_" + metric
         wandb_metrics[metric_str] = value
-    wandb.log(wandb_metrics)
+    if log_wandb:
+        wandb.log(wandb_metrics)
     summary_str = ("Train " if train else "Test ") + "Results\t"
     for metric, value in metrics.items():
         summary_str += "{0}: {1:.4f}, ".format(metric, value)
@@ -220,17 +222,9 @@ def learner(cls):
         
         def __new__(self, rng, *args, **kwargs):
             model = cls(*args, **kwargs)
-            train_state = LearnerState.create(cls._submodule_outputs(model), rng)
-            for name in cls._submodule_outputs(model).keys():
-                func = lambda ts, params, *x: ts.apply_module(name, params, *x)
-                object.__setattr__(model, name, func)
-            return model, train_state
+            return model, ClassifierState.create(rng, *model.classifier())
         
     return Wrapper
-
-
-class TrainState(TrainState):
-    batch_stats : FrozenDict[str, any]
         
 @dataclass
 class LearnerState:
@@ -268,13 +262,26 @@ class LearnerState:
                       for name, state in new_states.items()}
         return self.replace(states=new_states, step=self.step + 1)
     
+@dataclass
+class ClassifierState:
+    state : TrainState
+    step : int
+    
+    @classmethod
+    def create(cls, rng, module, input_shape, optim):
+        params = module.init(rng, jnp.zeros(input_shape, jnp.float32))
+        return ClassifierState(state=TrainState.create(apply_fn=module.apply, tx=optim, params=params), step=0)
+    
+    def apply_gradients(self, grads):
+        return self.replace(state=self.state.apply_gradients(grads=grads), step=self.step + 1)
+    
 
 @learner
 class Classifier:
     input_size : int = 784
     num_labels : int = 10
     
-    @submodule
+#    @submodule
     def classifier(self):
         encoder = MLP(input_size=self.input_size,
                       output_size=self.num_labels,
@@ -284,9 +291,13 @@ class Classifier:
         
     def compute_loss(self, ts, params, rng, *data, train=True):
         inputs, labels = data
-        preds, params = self.classifier(ts, params, inputs) 
+        preds = ts.state.apply_fn(params, inputs) 
         return {'loss': bce_loss(preds, one_hot(labels, self.num_labels))}, {}, {}, params
     
+    def initial_state(self, init_rng):
+        module, input_shape, optim = self.classifier()
+        params = module.init(init_rng, jnp.zeros(input_shape, jnp.float32))
+        return TrainState.create(apply_fn=module.apply, params=params, tx=optim)
     
 @partial(jit, static_argnums=0)
 def train_step(coder, train_state, rng, *data):
@@ -296,11 +307,12 @@ def train_step(coder, train_state, rng, *data):
         return loss, {'new_vars': new_vars, 'info': {'loss': loss, **losses, **metrics}}
     step_rng, rng = random.split(rng)
     val_and_grad = value_and_grad(loss_fn, has_aux=True, argnums=0)
-    (loss, stats), grads = val_and_grad(train_state.get_params(), step_rng)
-    new_train_state = train_state.apply_gradients(grads, stats['new_vars'])
+    (loss, stats), grads = val_and_grad(train_state.state.params, step_rng)
+    new_train_state = train_state.apply_gradients(grads=grads)
+    new_train_state = train_state.replace(state=train_state.state.replace(params=new_train_state.state.params.copy(add_or_replace=stats['new_vars'])))
     return new_train_state, rng, stats['info']
 
-from optax import adam
+
 train_ds, test_ds = get_mnist_datasets(binarized=True)
 epochs = 20
 batch_size = 60
@@ -316,18 +328,18 @@ for epoch in range(epochs):
     perms = perms[:steps_per_epoch * batch_size].reshape((steps_per_epoch, batch_size))
     batch_metrics = list()
     for perm in tqdm(perms):
-        batch_data = (train_ds['image'], train_ds['label'])
+        batch_data = tuple([obj[perm, ...] for obj in train_ds.values()])
         state, rng, metrics = train_step(coder, state, step_rng, *batch_data)
         batch_metrics.append(metrics)
     batch_metrics_np = jax.device_get(batch_metrics)
     epoch_metrics_np = {metric: np.mean([metrics[metric] for metrics in batch_metrics_np])
                         for metric in batch_metrics_np[0]}
-    write_summary(epoch_metrics_np, True)
+    write_summary(epoch_metrics_np, True, log_wandb=False)
     if (epoch + 1) % test_interval == 0 or epoch == epochs - 1:
         rng, eval_rng = random.split(rng)
         batch_data = tuple([obj[perm, ...] for obj in test_ds])
         eval_metrics, eval_data = coder.evaluate(state, eval_rng, *batch_data)
         eval_metrics_np, eval_data_np = jax.device_get(eval_metrics), jax.device_get(eval_data)
-        write_summary(eval_metrics_np, False)
-        write_data(eval_data_np, False)
-    state = state.next_epoch()
+        write_summary(eval_metrics_np, False, log_wandb=False)
+        #write_data(eval_data_np, False, log_wandb=False)
+    #state = state.next_epoch()

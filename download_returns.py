@@ -1,21 +1,50 @@
-import os
-import argparse
+from google.cloud import storage
 import numpy as np
-if __name__ == "main":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('program', type=str, default='bcq', help='Name of program')
-    parser.add_argument('env', type=str, default='halfcheetah-expert-v0', help='Name of environment')
-    parser.add_argument('seed', type=int, default=0, help='Starting seed to pull experiment data')
-    parser.add_argument('N', type=int, default=1, help='Number of experiments to pull')
-    args = parser.parse_args()
-    program = args.program
-    env = args.env
-    seed = args.seed
+import os, sys
+from matplotlib import pyplot as plt
+            
+'''
+Get and compile GCP return data.
+Usage: python download_returns.py {program} {env} {start_seed} {N}
+Example: To download returns from bcq on halfcheetah-expert-v0 for seeds 1950-1959,
+python download_returns.py bcq halfcheetah-expert-v0 1950 10
+'''
+
+def get_item_data(item, N, seed, program, env):
     lst = list()
-    old_r = np.load('./outputs/{program}_{env}_all.npy')
+    if not os.path.isdir(f"./output/{program}_{env}"):
+        os.system(f"mkdir ./output/{program}_{env}")
     for n in range(N):
-        os.system(f"gsuitl cp gs://kiran-research/latent-actions/outputs/{program}/seed{seed + n}/{program}_{env}_{seed}.npy ./outputs/{program}_{env}/{seed}.npy")
-        lst.append(np.load('./outputs/{program}_{env}/{seed}'))
-    r = np.array(lst)
-    r = np.concatenate(old_r, r, axis=0)
-    np.save(r, './outputs/{program}_{env}_all.npy')
+        bucket = storage.Client().bucket('kiran-research')
+        blob = bucket.blob(f"latent-actions/outputs/{program}/seed{seed + n}/{env}/{item}.npy")
+        blob.download_to_filename(f"./output/{env}/{program}/{seed + n}/{item}.npy")
+        lst.append(np.load(f"./output/{env}/{program}/{seed + n}/{item}.npy"))
+    print(f"from {program}: {[l.size for l in lst]}")
+    arr = np.concatenate([l[np.newaxis, :] for l in lst], axis=0)
+    return arr
+    
+
+if __name__ == '__main__':
+    if len(sys.argv) < 4:
+        print("Usage: python run_gcp.py {N} {start_seed} {env} [{color} {program}] ...")
+    else:
+        N = 10
+        seed = 1970
+        item = "reward"
+        programs = ["bcq", "ours", "td3_bc"]
+        colors = ["blue", "orange", "green"]
+        env = 'halfcheetah-expert-v0'
+        plt.figure()
+        for i in range(len(programs)):
+            rewards = get_item_data(item, N, seed, programs[i], env)
+            mean = rewards.mean(-1)
+            std = rewards.std(-1)
+            eval_freq = 5000
+            max_timesteps = 1000000
+            color = sys.argv[i]
+            program = sys.argv[i + 1]
+            x = range(eval_freq, eval_freq + max_timesteps, eval_freq)
+            plt.plot(x, mean, color=color, label=program)
+            plt.fill_between(x, mean - std, mean + std, facecolor=color, alpha=0.2)
+        plt.legend()
+        plt.show()
