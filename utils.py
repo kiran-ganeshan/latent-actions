@@ -3,7 +3,7 @@ from jax import random, numpy as jnp, jit, partial, value_and_grad
 from jax.nn import log_softmax, one_hot
 from flax.struct import dataclass
 from dataclasses import dataclass as dc
-from flax.training.train_state import TrainState
+from flax.training.train_state import *
 from flax.core.frozen_dict import FrozenDict
 import tensorflow_datasets as tfds
 import numpy as np
@@ -208,90 +208,120 @@ def submodule(method):
     method.is_submodule = True
     return method
 
+def learner(optim):
+    def learner_decorator(cls):
+        modules = getattr(cls, "submodule_funcs", {})
+        for f in cls.__dict__.values():
+            if isinstance(f, Callable) and getattr(f, "is_submodule", False):
+                modules[f.__name__] = f
+        cls._submodule_outputs = lambda self: {name: f(self) for name, f in modules.items()}
+        cls = dataclass(cls)
+        
+        @dataclass
+        class Wrapper(cls):
+            
+            @staticmethod
+            def __new__(self, rng, *args, **kwargs):
+                model = cls(*args, **kwargs)
+                params = dict()
+                rngs = random.split(rng, len(cls._submodule_outputs(self)))
+                for i, (name, tup) in enumerate(cls._submodule_outputs(self).items()):
+                    module, input_shape = tup
+                    params[name] = module.init(rngs[i], jnp.zeros(input_shape, jnp.float32))
+                    object.__setattr__(model, name, lambda params, *x: module.apply(params[name], *x))
+                return model, TrainState.create(params=params, tx=optim)
+            
+        return Wrapper
+    return learner_decorator
+        
 
-def learner(cls):
-    modules = getattr(cls, "submodule_funcs", {})
-    for f in cls.__dict__.values():
-        if isinstance(f, Callable) and getattr(f, "is_submodule", False):
-            modules[f.__name__] = f
-    cls._submodule_outputs = lambda self: {name: f(self) for name, f in modules.items()}
-    cls = dataclass(cls)
-    
-    @dataclass
-    class Wrapper(cls):
-        
-        def __new__(self, rng, *args, **kwargs):
-            model = cls(*args, **kwargs)
-            return model, ClassifierState.create(rng, *model.classifier())
-        
-    return Wrapper
-        
-@dataclass
-class LearnerState:
-    states : FrozenDict[str, TrainState]
-    mutable : FrozenDict[str, Sequence[str]]
-    step : int
-    
-    @classmethod
-    def create(cls, modules, rng):
-        rngs = random.split(rng, len(modules.items()))
-        states, mutable = dict(), dict()
-        for i, (name, tup) in enumerate(modules.items()):
-            module, input_shape, optim = tup
-            params = module.init(rngs[i], jnp.ones((10,) + input_shape, jnp.float32))
-            states[name] = TrainState.create(apply_fn=module.apply, 
-                                             params=params, 
-                                             tx=optim, 
-                                             batch_stats={})
-            mutable[name] = [col for col in params.keys() 
-                             if module.bind(params).is_mutable_collection(col)]
-        return LearnerState(states=FrozenDict(states), mutable=FrozenDict(mutable), step=0)
-    
-    @partial(jit, static_argnums=1)
-    def apply_module(self, name, params, *x):
-        out, new_vars = self.states[name].apply_fn(params[name], *x, mutable=self.mutable[name])
-        return out, params.copy(add_or_replace={name: params[name].copy(add_or_replace=new_vars)})
-    
-    def get_params(self):
-        return FrozenDict({name: state.params for name, state in self.states.items()})
-    
-    def apply_gradients(self, grads, new_vars):
-        new_states = {name: state.apply_gradients(grads=grads[name]) 
-                      for name, state in self.states.items()}
-        new_states = {name: state.replace(params=state.params.copy(new_vars)) 
-                      for name, state in new_states.items()}
-        return self.replace(states=new_states, step=self.step + 1)
-    
-@dataclass
-class ClassifierState:
-    state : TrainState
-    step : int
-    
-    @classmethod
-    def create(cls, rng, module, input_shape, optim):
-        params = module.init(rng, jnp.zeros(input_shape, jnp.float32))
-        return ClassifierState(state=TrainState.create(apply_fn=module.apply, tx=optim, params=params), step=0)
-    
-    def apply_gradients(self, grads):
-        return self.replace(state=self.state.apply_gradients(grads=grads), step=self.step + 1)
+class TrainState(struct.PyTreeNode):
+  """Simpler train state. Doesn't store an apply, leaves that to the learner.
+
+  Synopsis:
+
+    state = TrainState.create(
+        params=variables['params'],
+        tx=tx)
+    grad_fn = jax.grad(make_loss_fn(state.apply_fn))
+    for batch in data:
+      grads = grad_fn(state.params, batch)
+      state = state.apply_gradients(grads=grads)
+
+  Note that you can easily extend this dataclass by subclassing it for storing
+  additional data (e.g. additional variable collections).
+
+  For more exotic usecases (e.g. multiple optimizers) it's probably best to
+  fork the class and modify it.
+
+  Attributes:
+    step: Counter starts at 0 and is incremented by every call to
+      `.apply_gradients()`.
+    apply_fn: Usually set to `model.apply()`. Kept in this dataclass for
+      convenience to have a shorter params list for the `train_step()` function
+      in your training loop.
+    tx: An Optax gradient transformation.
+    opt_state: The state for `tx`.
+  """
+  step: int
+  params: core.FrozenDict[str, Any]
+  tx: optax.GradientTransformation = struct.field(pytree_node=False)
+  opt_state: optax.OptState
+
+  def apply_gradients(self, *, grads, **kwargs):
+    """Updates `step`, `params`, `opt_state` and `**kwargs` in return value.
+
+    Note that internally this function calls `.tx.update()` followed by a call
+    to `optax.apply_updates()` to update `params` and `opt_state`.
+
+    Args:
+      grads: Gradients that have the same pytree structure as `.params`.
+      **kwargs: Additional dataclass attributes that should be `.replace()`-ed.
+
+    Returns:
+      An updated instance of `self` with `step` incremented by one, `params`
+      and `opt_state` updated by applying `grads`, and additional attributes
+      replaced as specified by `kwargs`.
+    """
+    updates, new_opt_state = self.tx.update(
+        grads, self.opt_state, self.params)
+    new_params = optax.apply_updates(self.params, updates)
+    return self.replace(
+        step=self.step + 1,
+        params=new_params,
+        opt_state=new_opt_state,
+        **kwargs,
+    )
+
+  @classmethod
+  def create(cls, *, params, tx, **kwargs):
+    """Creates a new instance with `step=0` and initialized `opt_state`."""
+    opt_state = tx.init(params)
+    return cls(
+        step=0,
+        params=params,
+        tx=tx,
+        opt_state=opt_state,
+        **kwargs,
+    )
     
 
-@learner
+@learner(adam(1e-4, 0.9, 0.999))
 class Classifier:
     input_size : int = 784
     num_labels : int = 10
     
-#    @submodule
+    @submodule
     def classifier(self):
         encoder = MLP(input_size=self.input_size,
                       output_size=self.num_labels,
                       hidden_sizes=(500, 500),
                       activation=log_softmax)
-        return encoder, (self.input_size,), adam(1e-4, 0.9, 0.999)
+        return encoder, (self.input_size,)
         
     def compute_loss(self, ts, params, rng, *data, train=True):
         inputs, labels = data
-        preds = ts.state.apply_fn(params, inputs) 
+        preds, params = self.classifier(params, inputs) 
         return {'loss': bce_loss(preds, one_hot(labels, self.num_labels))}, {}, {}, params
     
     def initial_state(self, init_rng):
@@ -307,9 +337,8 @@ def train_step(coder, train_state, rng, *data):
         return loss, {'new_vars': new_vars, 'info': {'loss': loss, **losses, **metrics}}
     step_rng, rng = random.split(rng)
     val_and_grad = value_and_grad(loss_fn, has_aux=True, argnums=0)
-    (loss, stats), grads = val_and_grad(train_state.state.params, step_rng)
-    new_train_state = train_state.apply_gradients(grads=grads)
-    new_train_state = train_state.replace(state=train_state.state.replace(params=new_train_state.state.params.copy(add_or_replace=stats['new_vars'])))
+    (loss, stats), grads = val_and_grad(train_state.params, step_rng)
+    new_train_state = train_state.apply_gradients(grads, stats['new_vars'])
     return new_train_state, rng, stats['info']
 
 
@@ -321,6 +350,7 @@ test_interval = 5
 dataset_len = train_ds['image'].shape[0]
 rng, init_rng = random.split(random.PRNGKey(seed))
 coder, state = Classifier(init_rng)
+print(Classifier.__dict__)
 steps_per_epoch = dataset_len // batch_size
 for epoch in range(epochs):
     rng, step_rng, shuffle_rng = random.split(rng, 3)
