@@ -2,6 +2,7 @@ import doodad
 from doodad import MountLocal, MountGCP, GCPMode
 from doodad.utils import TESTING_DIR
 from testing.config import GCP_PROJECT, GCP_BUCKET, GCP_IMAGE
+from datetime import datetime
 import os, sys
             
 '''
@@ -38,7 +39,7 @@ def run(seed, name, env, flags):
         gcp_log_path='latent-actions',
         gcp_project=GCP_PROJECT,
         instance_type='n2-standard-4',
-        zone='us-west4-c',
+        zone='us-west1-a',
         gcp_image=GCP_IMAGE,
         gcp_image_project=GCP_PROJECT
     )

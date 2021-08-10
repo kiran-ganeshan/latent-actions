@@ -3,10 +3,10 @@ import jax
 from jax import numpy as jnp
 from jax import lax
 from flax import linen as nn
-from typing import Sequence, Callable
+from typing import Sequence, Callable, Any, Iterable
 from jax.interpreters.xla import DeviceArray
 from enum import Enum
-from jax.nn.initializers import variance_scaling
+from jax.nn.initializers import variance_scaling, lecun_normal
 from jax.nn import one_hot
 from flax.linen.initializers import zeros
 
@@ -48,6 +48,39 @@ class MaskedDense(nn.Dense):
         return y 
 
 
+class PairedDense(nn.Module):
+    features : int
+    middle : nn.Module
+    use_bias : bool = True
+    dtype: Any = jnp.float32
+    precision: Any = None
+    kernel_init: Callable[[Any, Iterable[int], Any], Any] = lecun_normal()
+    bias_init: Callable[[Any, Iterable[int], Any], Any] = zeros
+    reconst_init : Callable[[Any, Iterable[int], Any], Any] = zeros
+    
+    @nn.compact
+    def __call__(self, x):
+        x = jnp.asarray(x, self.dtype)
+        kernel = self.param('kernel', self.kernel_init, (x.shape[-1], self.features))
+        kernel = jnp.asarray(kernel, self.dtype)
+        y = lax.dot_general(x, kernel, (((x.ndim - 1,), (0,)), ((), ())), precision=self.precision)
+        if self.use_bias:
+            bias = self.param('bias', self.bias_init, (self.features,))
+            bias = jnp.asarray(bias, self.dtype)
+            y = y + bias
+        y = self.middle(y)
+        pinv = jnp.linalg.pinv(kernel)
+        y = lax.dot_general(y, pinv, (((y.ndim - 1,), (0,)), ((), ())), precision=self.precision)
+        
+        reconst = self.param('reconst', self.reconst_init, (x.shape[-1],))
+        reconst = jnp.asarray(reconst, self.dtype)
+        near_id = 
+        y = y + 
+        if self.use_bias:
+            y = y - bias
+        return y
+
+
 class Module(nn.Module):
     
     @property 
@@ -58,9 +91,9 @@ class Module(nn.Module):
 class MLP(Module):
 
     model_name : str = 'mlp'
-    hidden_sizes : Sequence[int] = (100,)
     input_size : int = 784
     output_size : int = 10
+    hidden_sizes : Sequence[int] = (100,)
     activation : Callable[[DeviceArray], DeviceArray] = lambda x: x
     
     @property
