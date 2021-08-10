@@ -4,6 +4,3 @@
 [submodule "doodad"]
 	path = doodad
 	url = https://github.com/kiran-ganeshan/doodad.git
-[submodule "d4rl_evaluations"]
-	path = d4rl_evaluations
-	url = https://github.com/kiran-ganeshan/d4rl_evaluations.git
