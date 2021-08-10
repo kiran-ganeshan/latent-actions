@@ -4,3 +4,4 @@ flax_vae/results/
 *.swp
 *wandb/
 *.hdf5
+output/
