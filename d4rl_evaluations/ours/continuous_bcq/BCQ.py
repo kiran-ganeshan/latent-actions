@@ -211,9 +211,12 @@ class BCQ(object):
 			critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q) + KL_loss
 
 			self.critic_optimizer.zero_grad()
+			self.encoder_optimizer.zero_grad()
 			critic_loss.backward()
 			total_critic_loss += critic_loss
 			self.critic_optimizer.step()
+			self.encoder_optimizer.step()
+
 
 
 			# Pertubation Model / Action Training
