@@ -6,3 +6,4 @@ flax_vae/results/
 *.hdf5
 output*
 *results/
+cuda*
