@@ -120,7 +120,7 @@ class BCQ(object):
 	def __init__(self, state_dim, action_dim, max_action, num_samples, device, discount=0.99, tau=0.005, lmbda=0.75, beta=0.5, temp=1):
 		latent_dim = 2
 
-		self.encoder = Encoder(action_dim, latent_dim, device)
+		self.encoder = Encoder(action_dim, latent_dim, device).to(device)
 		self.encoder_optimizer = torch.optim.Adam(self.encoder.parameters())
 
 		self.critic = DecoderCritic(state_dim, latent_dim, device).to(device)
