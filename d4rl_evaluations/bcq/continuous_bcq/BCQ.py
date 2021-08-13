@@ -152,10 +152,10 @@ class BCQ(object):
 			critic_loss.backward()
 			self.critic_optimizer.step()
    
-			metrics['critic_loss'].append(critic_loss.detach().numpy())
-			metrics['vae_loss'].append(vae_loss.detach().numpy())
-			metrics['vae_kl_loss'].append(KL_loss.detach().numpy())
-			metrics['reconst_loss'].append(recon_loss.detach().numpy())
+			metrics['critic_loss'].append(critic_loss)
+			metrics['vae_loss'].append(vae_loss)
+			metrics['vae_kl_loss'].append(KL_loss)
+			metrics['reconst_loss'].append(recon_loss)
 
 
 
@@ -164,6 +164,7 @@ class BCQ(object):
 				target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
 		for key, value in metrics.items(): 
+			value = [v.cpu().detach().numpy() for v in value]
 			if len(value[0].shape) == 0:
 				print(f"{key}: {sum(value)}")
 			else:

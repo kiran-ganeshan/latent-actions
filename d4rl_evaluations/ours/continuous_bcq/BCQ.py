@@ -194,19 +194,20 @@ class BCQ(object):
 			self.critic_optimizer.step()
 			self.encoder_optimizer.step()
 
-			metrics['critic_loss'].append(critic_loss.detach().numpy())
-			metrics['bellman_loss'].append(bellman_loss.detach().numpy())
-			metrics['critic_kl_loss'].append(KL_loss.detach().numpy())
-			metrics['latent'].append(latent.detach().numpy())
-			metrics['vae_loss'].append(vae_loss.detach().numpy())
-			metrics['vae_kl_loss'].append(VKL_loss.detach().numpy())
-			metrics['reconst_loss'].append(recon_loss.detach().numpy())
+			metrics['critic_loss'].append(critic_loss)
+			metrics['bellman_loss'].append(bellman_loss)
+			metrics['critic_kl_loss'].append(KL_loss)
+			metrics['latent'].append(latent)
+			metrics['vae_loss'].append(vae_loss)
+			metrics['vae_kl_loss'].append(VKL_loss)
+			metrics['reconst_loss'].append(recon_loss)
 
 			# Update Target Networks 
 			for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
 				target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
 		for key, value in metrics.items(): 
+			value = [v.cpu().detach().numpy() for v in value]
 			if len(value[0].shape) == 0:
 				print(f"{key}: {sum(value) / len(value)}")
 				metrics[key] = [sum(value) / len(value)]
