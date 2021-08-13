@@ -12,7 +12,7 @@ Example: To run d4rl_evaluations/bcq 10 times on seed 100000 with flags {env: ha
 python run_gcp.py 10 100000 bcq --env halfcheetah --tau 0.5
 '''
 
-def run(seed, name, env, flags):
+def run(loc, seed, name, env, flags):
     repo = 'd4rl_evaluations'
     local_mount = MountLocal(
         local_dir=TESTING_DIR,
@@ -34,12 +34,14 @@ def run(seed, name, env, flags):
     cmd += f"cd /code {redirects};\npython main.py{flags} --seed {seed} --env {env} {redirects}"
     #cmd = f"pip list | grep mujoco-py {redirects};cd /code;\npython test.py {redirects}"
     print(f"running command:\n{cmd}")
+    locations = ['us-west4-a', 'us-west1-a', 'us-east1-b', 'asia-east2-a', 
+                 'asia-northeast1-a', 'asia-northeast2-a']
     launcher = GCPMode(
         gcp_bucket=GCP_BUCKET,
         gcp_log_path='latent-actions',
         gcp_project=GCP_PROJECT,
         instance_type='n2-standard-4',
-        zone='us-west1-a',
+        zone=locations[loc],
         gcp_image=GCP_IMAGE,
         gcp_image_project=GCP_PROJECT
     )
@@ -52,8 +54,8 @@ def run(seed, name, env, flags):
     )
 
 if __name__ == '__main__':
-    if len(sys.argv) < 5:
-        print("Usage: python run_gcp.py {num runs} {seed} {name} {env} --flag value ...")
+    if len(sys.argv) < 6:
+        print("Usage: python run_gcp.py {location} {num runs} {seed} {name} {env} --flag value ...")
     else:
-        for i in range(int(sys.argv[1])):
-            run(str(int(sys.argv[2]) + i), sys.argv[3], sys.argv[4], sys.argv[5:])
+        for i in range(int(sys.argv[2])):
+            run(int(sys.argv[1]), str(int(sys.argv[3]) + i), sys.argv[4], sys.argv[5], sys.argv[6:])

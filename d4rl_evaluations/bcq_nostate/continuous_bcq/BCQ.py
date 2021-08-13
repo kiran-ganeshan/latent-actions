@@ -42,7 +42,7 @@ class Critic(nn.Module):
 class VAE(nn.Module):
 	def __init__(self, state_dim, action_dim, latent_dim, max_action, device):
 		super(VAE, self).__init__()
-		self.e1 = nn.Linear(state_dim + action_dim, 750)
+		self.e1 = nn.Linear(action_dim, 750)
 		self.e2 = nn.Linear(750, 750)
 
 		self.mean = nn.Linear(750, latent_dim)
@@ -58,7 +58,7 @@ class VAE(nn.Module):
 
 
 	def forward(self, state, action):
-		z = F.relu(self.e1(torch.cat([state, action], 1)))
+		z = F.relu(self.e1(action))
 		z = F.relu(self.e2(z))
 
 		mean = self.mean(z)
@@ -105,7 +105,7 @@ class BCQ(object):
 	def select_action(self, state):		
 		with torch.no_grad():
 			state = torch.FloatTensor(state.reshape(1, -1)).repeat(100, 1).to(self.device)
-			action = self.vae.decode(state)
+			action = self.actor(state, self.vae.decode(state))
 			q1 = self.critic.q1(state, action)
 			ind = q1.argmax(0)
 		return action[ind].cpu().data.numpy().flatten()
@@ -156,8 +156,6 @@ class BCQ(object):
 			metrics['vae_loss'].append(vae_loss.detach().numpy())
 			metrics['vae_kl_loss'].append(KL_loss.detach().numpy())
 			metrics['reconst_loss'].append(recon_loss.detach().numpy())
-
-
 
 			# Update Target Networks 
 			for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):

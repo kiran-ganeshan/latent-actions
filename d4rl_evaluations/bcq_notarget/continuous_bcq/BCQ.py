@@ -88,7 +88,6 @@ class BCQ(object):
 		latent_dim = action_dim * 2
 
 		self.critic = Critic(state_dim, action_dim).to(device)
-		self.critic_target = copy.deepcopy(self.critic)
 		self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=1e-3)
 
 		self.vae = VAE(state_dim, action_dim, latent_dim, max_action, device).to(device)
@@ -136,7 +135,7 @@ class BCQ(object):
 				next_state = torch.repeat_interleave(next_state, 10, 0)
 
 				# Compute value of perturbed actions sampled from the VAE
-				target_Q1, target_Q2 = self.critic_target(next_state, self.vae.decode(next_state))
+				target_Q1, target_Q2 = self.critic(next_state, self.vae.decode(next_state))
 
 				# Soft Clipped Double Q-learning 
 				target_Q = self.lmbda * torch.min(target_Q1, target_Q2) + (1. - self.lmbda) * torch.max(target_Q1, target_Q2)
@@ -156,12 +155,6 @@ class BCQ(object):
 			metrics['vae_loss'].append(vae_loss.detach().numpy())
 			metrics['vae_kl_loss'].append(KL_loss.detach().numpy())
 			metrics['reconst_loss'].append(recon_loss.detach().numpy())
-
-
-
-			# Update Target Networks 
-			for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
-				target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
 		for key, value in metrics.items(): 
 			if len(value[0].shape) == 0:

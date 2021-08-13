@@ -6,7 +6,6 @@ import torch
 import d4rl
 import uuid
 import json
-from numbers import Number
 import continuous_bcq.BCQ
 import continuous_bcq.utils as utils
 
@@ -16,8 +15,8 @@ def train_BCQ(env, state_dim, action_dim, max_action, device, output_dir, args):
     setting = f"{args.env}_{args.seed}"
 
     # Initialize policy
-    policy = continuous_bcq.BCQ.BCQ(state_dim, action_dim, max_action, args.num_samples, device, args.discount, args.tau, args.lmbda, args.beta, args.temp)
-
+    policy = continuous_bcq.BCQ.BCQ(state_dim, action_dim, max_action, device, args.discount, args.tau, args.lmbda, args.phi)
+    
         
     # Load buffer
     replay_buffer = utils.ReplayBuffer(state_dim, action_dim, device)
@@ -43,12 +42,13 @@ def train_BCQ(env, state_dim, action_dim, max_action, device, output_dir, args):
     #replay_buffer.load(f"./buffers/{buffer_name}")
     
     evaluations = []
-    metrics = {'critic_loss': list(), 'critic_kl_loss': list(), 'bellman_loss': list(), 
-               'vae_loss': list(), 'vae_kl_loss': list(), 'reconst_loss': list(), 
-               'latent': list()}
     episode_num = 0
     done = True 
     training_iters = 0
+    
+    metrics = {'critic_loss': list(), 'kl_loss': list(), 'vae_kl_loss': list(),
+               'bellman_loss': list(), 'vae_loss': list(), 'latent': list(), 
+               'reconst_loss': list()}
     
     while training_iters < args.max_timesteps: 
             print('Train step:', training_iters, flush=True)
@@ -106,8 +106,8 @@ if __name__ == "__main__":
     parser.add_argument("--discount", default=0.99)                             # Discount factor
     parser.add_argument("--tau", default=0.005)                                 # Target network update rate
     parser.add_argument("--lmbda", default=0.75)                                # Weighting for clipped double Q-learning in BCQ
-    parser.add_argument("--phi", default=0.05)                                  # Max perturbation hyper-parameter for BCQ
-    parser.add_argument("--beta", default=0.5, type=float)                      # Weighting factor for KL Divergence in loss
+    parser.add_argument("--phi", default=0)                                     # Max perturbation hyper-parameter for BCQ
+    parser.add_argument("--beta", default=0.5)                                  # Weighting factor for KL Divergence in loss
     parser.add_argument("--temp", default=1)                                    # Temperature for AWAC-style actor
     parser.add_argument("--num_samples", "-N", default=10)                      # Number of samples to take for target
     parser.add_argument("--output_dir", default="/output")
@@ -124,7 +124,7 @@ if __name__ == "__main__":
         'env_name': args.env,
         'seed': args.seed,
         }, params_file)
-
+        
     if not os.path.exists("./results"):
         os.makedirs("./results")
 

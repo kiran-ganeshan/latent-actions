@@ -113,7 +113,7 @@ if __name__ == "__main__":
 		mean,std = 0,1
 	
 	evaluations = []
-	make_empty_dict = lambda: {'critic_loss': [], 'actor_loss': []}
+	make_empty_dict = lambda: {'critic_loss': [], 'reconst_loss': [], 'kl_loss': [], 'latent': [], 'actor_loss': []}
 	metrics, epoch_metrics = make_empty_dict(), make_empty_dict()
 	for t in range(int(args.max_timesteps)):
 		batch_metrics = policy.train(replay_buffer, args.batch_size)

@@ -42,15 +42,15 @@ class Critic(nn.Module):
 class VAE(nn.Module):
 	def __init__(self, state_dim, action_dim, latent_dim, max_action, device):
 		super(VAE, self).__init__()
-		self.e1 = nn.Linear(state_dim + action_dim, 750)
-		self.e2 = nn.Linear(750, 750)
+		self.e1 = nn.Linear(action_dim, 75)
+		self.e2 = nn.Linear(75, 75)
 
-		self.mean = nn.Linear(750, latent_dim)
-		self.log_std = nn.Linear(750, latent_dim)
+		self.mean = nn.Linear(75, latent_dim)
+		self.log_std = nn.Linear(75, latent_dim)
 
-		self.d1 = nn.Linear(state_dim + latent_dim, 750)
-		self.d2 = nn.Linear(750, 750)
-		self.d3 = nn.Linear(750, action_dim)
+		self.d1 = nn.Linear(state_dim + latent_dim, 75)
+		self.d2 = nn.Linear(75, 75)
+		self.d3 = nn.Linear(75, action_dim)
 
 		self.max_action = max_action
 		self.latent_dim = latent_dim
@@ -58,7 +58,7 @@ class VAE(nn.Module):
 
 
 	def forward(self, state, action):
-		z = F.relu(self.e1(torch.cat([state, action], 1)))
+		z = F.relu(self.e1(action))
 		z = F.relu(self.e2(z))
 
 		mean = self.mean(z)
@@ -88,7 +88,6 @@ class BCQ(object):
 		latent_dim = action_dim * 2
 
 		self.critic = Critic(state_dim, action_dim).to(device)
-		self.critic_target = copy.deepcopy(self.critic)
 		self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=1e-3)
 
 		self.vae = VAE(state_dim, action_dim, latent_dim, max_action, device).to(device)
@@ -105,7 +104,7 @@ class BCQ(object):
 	def select_action(self, state):		
 		with torch.no_grad():
 			state = torch.FloatTensor(state.reshape(1, -1)).repeat(100, 1).to(self.device)
-			action = self.vae.decode(state)
+			action = self.actor(state, self.vae.decode(state))
 			q1 = self.critic.q1(state, action)
 			ind = q1.argmax(0)
 		return action[ind].cpu().data.numpy().flatten()
@@ -136,7 +135,7 @@ class BCQ(object):
 				next_state = torch.repeat_interleave(next_state, 10, 0)
 
 				# Compute value of perturbed actions sampled from the VAE
-				target_Q1, target_Q2 = self.critic_target(next_state, self.vae.decode(next_state))
+				target_Q1, target_Q2 = self.critic(next_state, self.vae.decode(next_state))
 
 				# Soft Clipped Double Q-learning 
 				target_Q = self.lmbda * torch.min(target_Q1, target_Q2) + (1. - self.lmbda) * torch.max(target_Q1, target_Q2)
@@ -156,12 +155,6 @@ class BCQ(object):
 			metrics['vae_loss'].append(vae_loss.detach().numpy())
 			metrics['vae_kl_loss'].append(KL_loss.detach().numpy())
 			metrics['reconst_loss'].append(recon_loss.detach().numpy())
-
-
-
-			# Update Target Networks 
-			for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
-				target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
 		for key, value in metrics.items(): 
 			if len(value[0].shape) == 0:

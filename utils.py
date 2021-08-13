@@ -275,7 +275,7 @@ def learner(cls):
                 def apply(params, *x):
                     out, new = module.apply(params[name], *x, mutable=mutable)
                     print(out.shape)
-                    print(new.shape)
+                    print(new)
                     return out
                 object.__setattr__(model, name, apply)
             return model, MultiTrainState.create(params=params, tx=optims)

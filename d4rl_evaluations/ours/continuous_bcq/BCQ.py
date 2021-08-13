@@ -6,39 +6,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
-
-
-class Actor(nn.Module):
-	def __init__(self, state_dim, action_dim, max_action, phi=0.05):
-		super(Actor, self).__init__()
-		self.l1 = nn.Linear(state_dim + action_dim, 40)
-		self.l2 = nn.Linear(40, 30)
-		self.l3 = nn.Linear(30, action_dim)
-		
-		self.max_action = max_action
-		self.phi = phi
-
-
-	def forward(self, state, action):
-		a = F.relu(self.l1(torch.cat([state, action], 1)))
-		a = F.relu(self.l2(a))
-		a = self.phi * self.max_action * torch.tanh(self.l3(a))
-		return (a + action).clamp(-self.max_action, self.max_action)
+from numbers import Number
 
 
 class Encoder(nn.Module):
     
-	def __init__(self, state_dim, action_dim, latent_dim, device):
+	def __init__(self, action_dim, latent_dim, device):
 		super(Encoder, self).__init__()
-		self.e1 = nn.Linear(state_dim + action_dim, 75)
-		self.e2 = nn.Linear(75, 75)
+		self.e1 = nn.Linear(action_dim, 400)
+		self.e2 = nn.Linear(400, 400)
 
-		self.mean = nn.Linear(75, latent_dim)
-		self.log_std = nn.Linear(75, latent_dim)
+		self.mean = nn.Linear(400, latent_dim)
+		self.log_std = nn.Linear(400, latent_dim)
 		self.device = device
   
-	def forward(self, state, action):
-		z = F.relu(self.e1(torch.cat([state, action], 1)))
+	def forward(self, action):
+		z = F.relu(self.e1(action))
 		z = F.relu(self.e2(z))
 
 		mean = self.mean(z)
@@ -53,13 +36,13 @@ class DecoderCritic(nn.Module):
     
 	def __init__(self, state_dim, latent_dim, device):
 		super(DecoderCritic, self).__init__()
-		self.l1 = nn.Linear(state_dim + latent_dim, 40)
-		self.l2 = nn.Linear(40, 30)
-		self.l3 = nn.Linear(30, 1)
+		self.l1 = nn.Linear(state_dim + latent_dim, 400)
+		self.l2 = nn.Linear(400, 300)
+		self.l3 = nn.Linear(300, 1)
 
-		self.l4 = nn.Linear(state_dim + latent_dim, 40)
-		self.l5 = nn.Linear(40, 30)
-		self.l6 = nn.Linear(30, 1)
+		self.l4 = nn.Linear(state_dim + latent_dim, 400)
+		self.l5 = nn.Linear(400, 300)
+		self.l6 = nn.Linear(300, 1)
 
 		self.latent_dim = latent_dim
 		self.device = device
@@ -93,15 +76,15 @@ class DecoderCritic(nn.Module):
 class VAE(nn.Module):
 	def __init__(self, state_dim, action_dim, latent_dim, max_action, device):
 		super(VAE, self).__init__()
-		self.e1 = nn.Linear(state_dim + action_dim, 75)
-		self.e2 = nn.Linear(75, 75)
+		self.e1 = nn.Linear(state_dim + action_dim, 750)
+		self.e2 = nn.Linear(750, 750)
 
-		self.mean = nn.Linear(75, latent_dim)
-		self.log_std = nn.Linear(75, latent_dim)
+		self.mean = nn.Linear(750, latent_dim)
+		self.log_std = nn.Linear(750, latent_dim)
 
-		self.d1 = nn.Linear(state_dim + latent_dim, 75)
-		self.d2 = nn.Linear(75, 75)
-		self.d3 = nn.Linear(75, action_dim)
+		self.d1 = nn.Linear(state_dim + latent_dim, 750)
+		self.d2 = nn.Linear(750, 750)
+		self.d3 = nn.Linear(750, action_dim)
 
 		self.max_action = max_action
 		self.latent_dim = latent_dim
@@ -135,13 +118,9 @@ class VAE(nn.Module):
     
 class BCQ(object):
 	def __init__(self, state_dim, action_dim, max_action, num_samples, device, discount=0.99, tau=0.005, lmbda=0.75, beta=0.5, temp=1):
-		latent_dim = action_dim * 2
-		self.actor = Actor(state_dim, action_dim, max_action, phi=0).to(device)
-		self.actor_target = copy.deepcopy(self.actor)
-		self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=1e-3)
+		latent_dim = 2
 
-		self.encoder = Encoder(state_dim, action_dim, latent_dim, device)
-		self.encoder_target = copy.deepcopy(self.encoder)
+		self.encoder = Encoder(action_dim, latent_dim, device)
 		self.encoder_optimizer = torch.optim.Adam(self.encoder.parameters())
 
 		self.critic = DecoderCritic(state_dim, latent_dim, device).to(device)
@@ -165,15 +144,15 @@ class BCQ(object):
 	def select_action(self, state):		
 		with torch.no_grad():
 			state = torch.FloatTensor(state.reshape(1, -1)).repeat(100, 1).to(self.device)
-			action = self.actor(state, self.vae.decode(state))
 			action = self.vae.decode(state)
-			q1 = self.critic.q1(state, self.encoder(state, action)[0])
+			q1 = self.critic.q1(state, self.encoder(action)[0])
 			ind = q1.argmax(0)
 		return action[ind].cpu().data.numpy().flatten()
 
 	def train(self, replay_buffer, iterations, step, batch_size=100):
-
-		total_actor_loss, total_critic_loss, total_vae_loss = 0, 0, 0
+		metrics = {'critic_loss': list(), 'critic_kl_loss': list(), 
+                   'bellman_loss': list(), 'vae_loss': list(), 'vae_kl_loss': list(),
+                   'reconst_loss': list(), 'latent': list()}
 		for it in tqdm(range(iterations)):
 			# Sample replay buffer / batch
 			state, action, next_state, reward, not_done = replay_buffer.sample(batch_size)
@@ -181,14 +160,12 @@ class BCQ(object):
 			# Variational Auto-Encoder Training
 			recon, mean, std = self.vae(state, action)
 			recon_loss = F.mse_loss(recon, action)
-			KL_loss	= -0.5 * (1 + torch.log(std.pow(2)) - mean.pow(2) - std.pow(2)).mean()
-			vae_loss = recon_loss + 0.5 * KL_loss
+			VKL_loss = -0.5 * (1 + torch.log(std.pow(2)) - mean.pow(2) - std.pow(2)).mean()
+			vae_loss = recon_loss + 0.5 * VKL_loss
 
 			self.vae_optimizer.zero_grad()
 			vae_loss.backward()
-			total_vae_loss += vae_loss
 			self.vae_optimizer.step()
-
 
 			# Critic Training
 			with torch.no_grad():
@@ -205,47 +182,37 @@ class BCQ(object):
 
 				target_Q = reward + not_done * self.discount * target_Q
 
-			latent, mean, std = self.encoder(state, action)
+			latent, mean, std = self.encoder(action)
 			current_Q1, current_Q2 = self.critic(state, latent)
-			KL_loss	= -self.beta * 0.5 * (1 + torch.log(std.pow(2)) - mean.pow(2) - std.pow(2)).mean()
-			critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q) + KL_loss
+			KL_loss	= - 0.5 * (1 + torch.log(std.pow(2)) - mean.pow(2) - std.pow(2)).mean()
+			bellman_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
+			critic_loss = bellman_loss + self.beta * KL_loss
 
 			self.critic_optimizer.zero_grad()
 			self.encoder_optimizer.zero_grad()
 			critic_loss.backward()
-			total_critic_loss += critic_loss
 			self.critic_optimizer.step()
 			self.encoder_optimizer.step()
 
-
-
-			# Pertubation Model / Action Training
-			#sampled_actions = self.vae.decode(state)
-			#perturbed_actions = self.actor(state, sampled_actions)
-
-			# Update through DPG
-			#actor_loss = -self.critic.q1(state, perturbed_actions).mean()
-		 	 
-			#self.actor_optimizer.zero_grad()
-			#actor_loss.backward()
-			#total_actor_loss += actor_loss
-			#self.actor_optimizer.step()
-
-
+			metrics['critic_loss'].append(critic_loss.detach().numpy())
+			metrics['bellman_loss'].append(bellman_loss.detach().numpy())
+			metrics['critic_kl_loss'].append(KL_loss.detach().numpy())
+			metrics['latent'].append(latent.detach().numpy())
+			metrics['vae_loss'].append(vae_loss.detach().numpy())
+			metrics['vae_kl_loss'].append(VKL_loss.detach().numpy())
+			metrics['reconst_loss'].append(recon_loss.detach().numpy())
 
 			# Update Target Networks 
 			for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
 				target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
-			for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
-				target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-    
-			for param, target_param in zip(self.encoder.parameters(), self.encoder_target.parameters()):
-				target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-
-		print("critic loss: {}".format(total_critic_loss))
-		print("actor loss: {}".format(total_actor_loss))
-		print("vae loss: {}".format(total_vae_loss))
+		for key, value in metrics.items(): 
+			if len(value[0].shape) == 0:
+				print(f"{key}: {sum(value) / len(value)}")
+				metrics[key] = [sum(value) / len(value)]
+			else:
+				metrics[key] = [np.concatenate(value, axis=0)]
 		#wandb.log({'critic_loss': total_critic_loss, 
 		#		   'actor_loss': total_actor_loss, 
 		#		   'vae_loss': total_vae_loss}, step=int(step))
+		return metrics
