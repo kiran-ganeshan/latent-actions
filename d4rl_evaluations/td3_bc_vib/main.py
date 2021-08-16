@@ -125,7 +125,7 @@ if __name__ == "__main__":
 			epoch_metrics[metric].append(value)
 		# Evaluate episode
 		if (t + 1) % args.eval_freq == 0:
-			pbar = tqdm(total=args.eval_freq, disable=args.no_tqdm)
+			pbar.close()
 			print(f"Time steps: {t+1}")
 			for key, value in epoch_metrics.items(): 
 				value = [v.cpu().detach().numpy() for v in value]
@@ -139,3 +139,4 @@ if __name__ == "__main__":
 			np.save(os.path.join(args.output_dir, "reward"), evaluations)
 			if args.save_model: policy.save(f"./models/{file_name}")
 			epoch_metrics = make_empty_dict()
+			pbar = tqdm(total=args.eval_freq, disable=args.no_tqdm)

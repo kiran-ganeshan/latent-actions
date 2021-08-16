@@ -4,6 +4,7 @@ from doodad.utils import TESTING_DIR
 from testing.config import GCP_PROJECT, GCP_BUCKET, GCP_IMAGE
 from datetime import datetime
 import os, sys
+from time import sleep
             
 '''
 Runs script on GCP using doodad.
@@ -58,6 +59,7 @@ def run(loc, seed, name, env, flags):
             finished = True
         except:
             print("connection failed. attempting to run again.")
+            sleep(5.)
         
 
 if __name__ == '__main__':
