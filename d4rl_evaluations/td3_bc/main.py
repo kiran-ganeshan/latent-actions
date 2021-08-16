@@ -56,12 +56,13 @@ if __name__ == "__main__":
 	parser.add_argument("--policy_noise", default=0.2)              # Noise added to target policy during critic update
 	parser.add_argument("--noise_clip", default=0.5)                # Range to clip target policy noise
 	parser.add_argument("--policy_freq", default=2, type=int)       # Frequency of delayed policy updates
+	parser.add_argument("--output_dir", type=str, default='/output')
 	# TD3 + BC
 	parser.add_argument("--alpha", default=2.5)
 	parser.add_argument("--normalize", default=True)
 	args = parser.parse_args()
 
-	file_name = f"{args.policy}_{args.env}_{args.seed}"
+	file_name = f"td3_bc_seed{args.seed}_{args.env}"
 	print("---------------------------------------")
 	print(f"Policy: {args.policy}, Env: {args.env}, Seed: {args.seed}")
 	print("---------------------------------------")
@@ -123,13 +124,13 @@ if __name__ == "__main__":
 		if (t + 1) % args.eval_freq == 0:
 			print(f"Time steps: {t+1}")
 			for key, value in epoch_metrics.items(): 
-				if len(value[0].shape) == 0:
+				if value[0].size == 1:
 					print(f"{key}: {sum(value) / len(value)}")
 					metrics[key].append(sum(value) / len(value))
 				else:
 					metrics[key].append(np.concatenate(value, axis=0))
-				np.save(f"/output/td3_bc/seed{args.seed}/{args.env}/{key}", metrics[key])
-			evaluations.append(eval_policy(policy, args.env, args.seed, mean, std))
-			np.save(f"/output/td3_bc/seed{args.seed}/{args.env}/reward", evaluations)
+				np.save(os.path.join(args.output_dir, key), metrics[key])
+			evaluations.append(eval_policy(policy, args.env, args.seed, t, mean, std))
+			np.save(os.path.join(args.output_dir, "reward"), evaluations)
 			if args.save_model: policy.save(f"./models/{file_name}")
 			epoch_metrics = make_empty_dict()

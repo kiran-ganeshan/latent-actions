@@ -45,13 +45,20 @@ def run(loc, seed, name, env, flags):
         gcp_image=GCP_IMAGE,
         gcp_image_project=GCP_PROJECT
     )
-    doodad.run_command(
-        docker_image='ikostrikov/ml_cpu_new:latest',
-        command=cmd,
-        mode=launcher,
-        mounts=mounts,
-        verbose=True
-    )
+    finished = False
+    while not finished:
+        try:
+            doodad.run_command(
+                docker_image='ikostrikov/ml_cpu_new:latest',
+                command=cmd,
+                mode=launcher,
+                mounts=mounts,
+                verbose=True
+            )
+            finished = True
+        except:
+            print("connection failed. attempting to run again.")
+        
 
 if __name__ == '__main__':
     if len(sys.argv) < 6:
