@@ -149,11 +149,11 @@ class BCQ(object):
 			ind = q1.argmax(0)
 		return action[ind].cpu().data.numpy().flatten()
 
-	def train(self, replay_buffer, iterations, step, batch_size=100):
+	def train(self, replay_buffer, iterations, step, batch_size=100, no_tqdm=False):
 		metrics = {'critic_loss': list(), 'critic_kl_loss': list(), 
                    'bellman_loss': list(), 'vae_loss': list(), 'vae_kl_loss': list(),
                    'reconst_loss': list(), 'latent': list()}
-		for it in tqdm(range(iterations)):
+		for it in tqdm(range(iterations), disable=no_tqdm):
 			# Sample replay buffer / batch
 			state, action, next_state, reward, not_done = replay_buffer.sample(batch_size)
 
