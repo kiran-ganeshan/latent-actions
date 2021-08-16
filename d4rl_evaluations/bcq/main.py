@@ -56,7 +56,6 @@ def train_BCQ(env, state_dim, action_dim, max_action, device, output_dir, args):
                                          step=training_iters, 
                                          batch_size=args.batch_size)
             for key, value in batch_metrics.items():
-                value = [v.detach().numpy() for v in value]
                 metrics[key].extend(value)
                 np.save(os.path.join(output_dir, key), metrics[key])
 

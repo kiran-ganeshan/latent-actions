@@ -153,7 +153,7 @@ class BCQ(object):
 		metrics = {'critic_loss': list(), 'critic_kl_loss': list(), 
                    'bellman_loss': list(), 'vae_loss': list(), 'vae_kl_loss': list(),
                    'reconst_loss': list(), 'latent': list()}
-		for it in range(iterations):
+		for it in tqdm(range(iterations)):
 			# Sample replay buffer / batch
 			state, action, next_state, reward, not_done = replay_buffer.sample(batch_size)
 
