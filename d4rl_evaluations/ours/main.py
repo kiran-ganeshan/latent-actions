@@ -55,7 +55,8 @@ def train_BCQ(env, state_dim, action_dim, max_action, device, output_dir, args):
             batch_metrics = policy.train(replay_buffer, 
                                          iterations=int(args.eval_freq), 
                                          step=training_iters, 
-                                         batch_size=args.batch_size)
+                                         batch_size=args.batch_size,
+                                         no_tqdm=args.no_tqdm)
             for key, value in batch_metrics.items():
                 metrics[key].extend(value)
                 np.save(os.path.join(output_dir, key), metrics[key])
@@ -111,6 +112,7 @@ if __name__ == "__main__":
     parser.add_argument("--temp", default=1)                                    # Temperature for AWAC-style actor
     parser.add_argument("--num_samples", "-N", default=10)                      # Number of samples to take for target
     parser.add_argument("--output_dir", default="/output")
+    parser.add_argument("--no_tqdm", action="store_true")
     args = parser.parse_args()
     d4rl.set_dataset_path('./datasets')
     print("---------------------------------------")	
