@@ -117,15 +117,15 @@ if __name__ == "__main__":
 	evaluations = []
 	make_empty_dict = lambda: {'critic_loss': [], 'actor_loss': []}
 	metrics, epoch_metrics = make_empty_dict(), make_empty_dict()
-	it = tqdm(range(args.eval_freq), disable=args.no_tqdm)
+	pbar = tqdm(total=args.eval_freq, disable=args.no_tqdm)
 	for t in range(int(args.max_timesteps)):
 		batch_metrics = policy.train(replay_buffer, args.batch_size)
-		it.next()
+		pbar.update(1)
 		for metric, value in batch_metrics.items():
 			epoch_metrics[metric].append(value.detach().numpy())
 		# Evaluate episode
 		if (t + 1) % args.eval_freq == 0:
-			it = tqdm(range(args.eval_freq), disable=args.no_tqdm)
+			pbar = tqdm(total=args.eval_freq, disable=args.no_tqdm)
 			print(f"Time steps: {t+1}")
 			for key, value in epoch_metrics.items(): 
 				if value[0].size == 1:
