@@ -207,7 +207,7 @@ class BCQ(object):
 				target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
 		for key, value in metrics.items(): 
-			value = [v.cpu().data.numpy() for v in value]
+			value = [v.cpu().detach().numpy() for v in value]
 			if value[0].size == 1:
 				print(f"{key}: {sum(value) / len(value)}")
 				metrics[key] = [sum(value) / len(value)]
