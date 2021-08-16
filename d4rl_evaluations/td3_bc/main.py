@@ -130,8 +130,8 @@ if __name__ == "__main__":
 			for key, value in epoch_metrics.items(): 
 				value = [v.cpu().detach().numpy() for v in value]
 				if value[0].size == 1:
-					print(f"{key}: {sum(value) / len(value)}")
-					metrics[key].append(sum(value) / len(value))
+					print(f"{key}: {sum(value)}")
+					metrics[key].append(sum(value))
 				else:
 					metrics[key].append(np.concatenate(value, axis=0))
 				np.save(os.path.join(args.output_dir, key), metrics[key])
