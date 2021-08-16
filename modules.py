@@ -70,14 +70,13 @@ class PairedDense(nn.Module):
             y = y + bias
         y = self.middle(y)
         pinv = jnp.linalg.pinv(kernel)
-        y = lax.dot_general(y, pinv, (((y.ndim - 1,), (0,)), ((), ())), precision=self.precision)
-        
-        reconst = self.param('reconst', self.reconst_init, (x.shape[-1],))
-        reconst = jnp.asarray(reconst, self.dtype)
-        near_id = 
-        y = y + 
         if self.use_bias:
             y = y - bias
+        y = lax.dot_general(y, pinv, (((y.ndim - 1,), (0,)), ((), ())), precision=self.precision)
+        reconst = self.param('reconst', self.reconst_init, (x.shape[-1],))
+        reconst = jnp.asarray(reconst, self.dtype)
+        near_id = jnp.eye(pinv.shape[0]) - pinv @ kernel
+        y = y + near_id @ reconst
         return y
 
 
@@ -121,7 +120,9 @@ class Encoder(MLP):
         x = self.mlp(x.reshape((-1, self.input_size)))
         mu = nn.Dense(features=self.latent_dim, kernel_init=zeros)(x)
         log_sigma = nn.Dense(features=self.latent_dim, kernel_init=zeros)(x)
-        return mu, log_sigma
+        tup = (mu, log_sigma)
+        print(f"returning {tup}")
+        return tup
     
     
 class MaskedMLP(Module):

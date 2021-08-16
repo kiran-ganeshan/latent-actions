@@ -200,54 +200,9 @@ def write_data(data, train=False):
         wandb_metrics[wandb_img_str + "embeddings"] = wandb.Image(scatter)
     wandb.log(wandb_metrics)
 
-'''
-def module(optim=None):
-    def submodule_decorator(method):
-        method.is_submodule = True
-        method.optim = optim
-        return method
-    return submodule_decorator
-'''
-
 def module(method):
     method.is_submodule = True
     return method
-
-'''
-def learner(optim=None):
-    def learner_decorator(cls):
-        modules = getattr(cls, "submodule_funcs", {})
-        optims = getattr(cls, "optimizers", {})
-        for f in cls.__dict__.values():
-            if isinstance(f, Callable) and getattr(f, "is_submodule", False):
-                modules[f.__name__] = f
-                optims[f.__name__] = getattr(f, "optim", optim)
-                print(optims[f.__name__])
-        cls._submodule_outputs = lambda self: {name: f(self) for name, f in modules.items()}
-        cls = dataclass(cls)
-        
-        @dataclass
-        class Wrapper(cls):
-            
-            @staticmethod
-            def __new__(self, rng, *args, **kwargs):
-                model = cls(*args, **kwargs)
-                params = dict()
-                rngs = random.split(rng, len(cls._submodule_outputs(self)))
-                for i, (name, tup) in enumerate(cls._submodule_outputs(self).items()):
-                    module, input_shape = tup
-                    params[name] = module.init(rngs[i], jnp.zeros(input_shape, jnp.float32))
-                    is_mutable = lambda name: module.bind(params).is_mutable_collection(name)
-                    mutable = [col for col in params.keys() if is_mutable(col)]
-                    def apply(params, *x):
-                        out, new = module.apply(params[name], *x, mutable=mutable)
-                        return out
-                    object.__setattr__(model, name, apply)
-                return model, TrainState.create(params=params, tx=optim, apply_fn=None)
-            
-        return Wrapper
-    return learner_decorator
-'''
 
 def learner(cls):
     modules = getattr(cls, "submodule_funcs", {})
@@ -267,17 +222,16 @@ def learner(cls):
             params, optims = dict(), dict()
             rngs = random.split(rng, len(cls._submodule_outputs(self)))
             for i, (name, tup) in enumerate(cls._submodule_outputs(self).items()):
+                print(f"initializing {name}")
                 module, optim, input_shape = tup
                 params[name] = module.init(rngs[i], jnp.zeros(input_shape, jnp.float32))
                 optims[name] = optim
                 is_mutable = lambda name: module.bind(params).is_mutable_collection(name)
                 mutable = [col for col in params.keys() if is_mutable(col)]
-                def apply(params, *x):
-                    out, new = module.apply(params[name], *x, mutable=mutable)
-                    print(out.shape)
-                    print(new)
-                    return out
+                apply = lambda params, *x: module.apply(params[name], *x)
+                print(f"apply is {apply}")
                 object.__setattr__(model, name, apply)
+                print(f"model.{name} is {getattr(model, name)}")
             return model, MultiTrainState.create(params=params, tx=optims)
         
     return Wrapper
@@ -333,10 +287,12 @@ class MultiTrainState(struct.PyTreeNode):
             replaced as specified by `kwargs`.
         """
         new_params = self.params
+        new_opt_state = self.opt_state
         for name, grads in grads.items():
-            updates, new_opt_state = self.tx[name].update(
+            updates, new_opt = self.tx[name].update(
                 grads, self.opt_state[name], self.params[name])
             new_params = optax.apply_updates(new_params, updates)
+            new_opt_state = new_opt_state.replace(name=new_opt)
         return self.replace(
             step=self.step + 1,
             params=new_params,
@@ -404,14 +360,15 @@ class Autoencoder:
     
     def compute_loss(self, params, rng, image, label, train=False):
         print(image.shape)
-        out = self.encoder(params, image)
-        print(out.shape)
-        #r = random.normal(rng, mu.shape)
-        #codes = mu + jnp.exp(log_sigma) * r
+        print(f"calling encoder at {self.encoder}")
+        print(self.encoder(params, image))
+        r = random.normal(rng, mu.shape)
+        codes = mu + jnp.exp(log_sigma) * r
+        print(f"calling encoder at {self.decoder}")
         output, params = self.decoder(params, codes)
         return output, {'loss': mse_loss(output, image)}, {}, params
     
-@partial(jit, static_argnums=0)
+#@partial(jit, static_argnums=0)
 def train_step(coder, train_state, rng, **data):
     def loss_fn(params, rng):
         losses, metrics, aux, new_vars = coder.compute_loss(params, rng, **data, train=True)

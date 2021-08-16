@@ -27,14 +27,13 @@ class Actor(nn.Module):
 
 class Encoder(nn.Module):
     
-	def __init__(self, action_dim, latent_dim, device):
+	def __init__(self, action_dim, latent_dim):
 		super(Encoder, self).__init__()
 		self.e1 = nn.Linear(action_dim, 256)
 		self.e2 = nn.Linear(256, 256)
 
 		self.mean = nn.Linear(256, latent_dim)
 		self.log_std = nn.Linear(256, latent_dim)
-		self.device = device
   
 	def forward(self, action):
 		z = F.relu(self.e1(action))
@@ -77,7 +76,7 @@ class Critic(nn.Module):
 		q2 = self.l6(q2)
 		return q1, q2
 
-	def q1(self, state, z=None):
+	def Q1(self, state, z=None):
      	# When sampling from the VAE, the latent vector is clipped to [-0.5, 0.5]
 		if z is None:
 			z = torch.randn((state.shape[0], self.latent_dim)).to(self.device).clamp(-0.5,0.5)
@@ -106,10 +105,10 @@ class TD3_BC(object):
 		self.actor = Actor(state_dim, action_dim, max_action).to(device)
 		self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=3e-4)
   
-		self.encoder = Encoder(action_dim, latent_dim, device).to(device)
+		self.encoder = Encoder(action_dim, latent_dim).to(device)
 		self.encoder_optimizer = torch.optim.Adam(self.encoder.parameters(), lr=3e-4)
 
-		self.critic = Critic(state_dim, latent_dim).to(device)
+		self.critic = Critic(state_dim, latent_dim, device).to(device)
 		self.critic_target = copy.deepcopy(self.critic)
 		self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=3e-4)
 
@@ -159,14 +158,15 @@ class TD3_BC(object):
 		self.encoder_optimizer.step()
 
 		metrics = {'critic_loss': critic_loss, 'reconst_loss': reconst_loss}
-  		metrics = {**metrics, 'kl_loss': kl_loss, 'latent': latent}
+		metrics = {**metrics, 'kl_loss': kl_loss, 'latent': latent}
 
 		# Delayed policy updates
 		if self.total_it % self.policy_freq == 0:
 
 			# Compute actor loss
 			pi = self.actor(state)
-			Q = self.critic.Q1(state, pi)
+			z, mean, std = self.encoder(pi)
+			Q = self.critic.Q1(state, z)
 			lmbda = self.alpha/Q.abs().mean().detach()
 
 			actor_loss = -lmbda * Q.mean() + F.mse_loss(pi, action) 

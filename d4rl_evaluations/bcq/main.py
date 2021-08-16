@@ -42,13 +42,12 @@ def train_BCQ(env, state_dim, action_dim, max_action, device, output_dir, args):
     #replay_buffer.load(f"./buffers/{buffer_name}")
     
     evaluations = []
-    episode_num = 0
+    episode_num = 0 
     done = True 
     training_iters = 0
     
-    metrics = {'critic_loss': list(), 'kl_loss': list(), 'vae_kl_loss': list(),
-               'bellman_loss': list(), 'vae_loss': list(), 'latent': list(), 
-               'reconst_loss': list()}
+    metrics = {'critic_loss': list(), 'vae_kl_loss': list(),
+               'vae_loss': list(), 'reconst_loss': list()}
     
     while training_iters < args.max_timesteps: 
             print('Train step:', training_iters, flush=True)
@@ -57,6 +56,7 @@ def train_BCQ(env, state_dim, action_dim, max_action, device, output_dir, args):
                                          step=training_iters, 
                                          batch_size=args.batch_size)
             for key, value in batch_metrics.items():
+                value = [v.detach().numpy() for v in value]
                 metrics[key].extend(value)
                 np.save(os.path.join(output_dir, key), metrics[key])
 

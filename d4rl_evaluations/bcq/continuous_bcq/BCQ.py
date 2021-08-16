@@ -115,7 +115,7 @@ class BCQ(object):
 
 		metrics = {'critic_loss': list(), 'vae_kl_loss': list(), 
                    'reconst_loss': list(), 'vae_loss': list()}
-		for it in tqdm(range(iterations)):
+		for it in range(iterations):
 			# Sample replay buffer / batch
 			state, action, next_state, reward, not_done = replay_buffer.sample(batch_size)
 
@@ -165,9 +165,8 @@ class BCQ(object):
 
 		for key, value in metrics.items(): 
 			value = [v.cpu().detach().numpy() for v in value]
-			print(f"cpu for {key}: {value}")
-			if len(value[0].shape) == 0:
-				print(f"{key}: {sum(value)}")
+			if value[0].size == 1:
+				print(f"{key}: {sum(value) / len(value)}")
 			else:
 				metrics[key] = [np.concatenate(value, axis=0)]
 		#wandb.log({'critic_loss': total_critic_loss, 
