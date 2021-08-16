@@ -4,7 +4,7 @@ import gym
 import argparse
 import os
 import d4rl
-
+from tqdm import tqdm
 import utils
 import TD3_BC
 
@@ -48,6 +48,7 @@ if __name__ == "__main__":
 	parser.add_argument("--max_timesteps", default=1e6, type=int)   # Max time steps to run environment
 	parser.add_argument("--save_model", action="store_true")        # Save model and optimizer parameters
 	parser.add_argument("--load_model", default="")                 # Model load file name, "" doesn't load, "default" uses file_name
+	parser.add_argument("--tqdm", action="store_false")	
 	# TD3
 	parser.add_argument("--expl_noise", default=0.1)                # Std of Gaussian exploration noise
 	parser.add_argument("--batch_size", default=256, type=int)      # Batch size for both actor and critic
@@ -116,12 +117,15 @@ if __name__ == "__main__":
 	evaluations = []
 	make_empty_dict = lambda: {'critic_loss': [], 'actor_loss': []}
 	metrics, epoch_metrics = make_empty_dict(), make_empty_dict()
+	it = tqdm(range(args.eval_freq), disable=(not args.tqdm))
 	for t in range(int(args.max_timesteps)):
 		batch_metrics = policy.train(replay_buffer, args.batch_size)
+		it.next()
 		for metric, value in batch_metrics.items():
 			epoch_metrics[metric].append(value.detach().numpy())
 		# Evaluate episode
 		if (t + 1) % args.eval_freq == 0:
+			it = tqdm(range(args.eval_freq), disable=(not args.tqdm))
 			print(f"Time steps: {t+1}")
 			for key, value in epoch_metrics.items(): 
 				if value[0].size == 1:
