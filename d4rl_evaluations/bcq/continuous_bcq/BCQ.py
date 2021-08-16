@@ -165,6 +165,7 @@ class BCQ(object):
 
 		for key, value in metrics.items(): 
 			value = [v.cpu().detach().numpy() for v in value]
+			print(f"cpu for {key}: {value}")
 			if len(value[0].shape) == 0:
 				print(f"{key}: {sum(value)}")
 			else:
