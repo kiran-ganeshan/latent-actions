@@ -46,8 +46,8 @@ if __name__ == "__main__":
 	parser.add_argument("--seed", default=0, type=int)              # Sets Gym, PyTorch and Numpy seeds
 	parser.add_argument("--eval_freq", default=int(5e3), type=int)       # How often (time steps) we evaluate
 	parser.add_argument("--max_timesteps", default=int(1e6), type=int)   # Max time steps to run environment
-	parser.add_argument("--save_model", action="store_true")        # Save model and optimizer parameters
-	parser.add_argument("--load_model", default="")                 # Model load file name, "" doesn't load, "default" uses file_name
+	parser.add_argument("--save", action="store_true")        # Save model and optimizer parameters
+	parser.add_argument("--load", action="store_true")        # Model load file name, "" doesn't load, "default" uses file_name
 	parser.add_argument("--no_tqdm", action="store_true")		
 	# TD3
 	parser.add_argument("--expl_noise", default=0.1)                # Std of Gaussian exploration noise
@@ -70,9 +70,6 @@ if __name__ == "__main__":
 
 	if not os.path.exists("./results"):
 		os.makedirs("./results")
-
-	if args.save_model and not os.path.exists("./models"):
-		os.makedirs("./models")
 
 	env = gym.make(args.env)
 
@@ -102,11 +99,16 @@ if __name__ == "__main__":
 
 	# Initialize policy
 	policy = TD3_BC.TD3_BC(**kwargs)
-
-	if args.load_model != "":
-		policy_file = file_name if args.load_model == "default" else args.load_model
-		policy.load(f"./models/{policy_file}")
-
+	make_empty_dict = lambda: {'critic_loss': [], 'reconst_loss': [], 'kl_loss': [], 'latent': [], 'actor_loss': []}
+	metrics, epoch_metrics = make_empty_dict(), make_empty_dict()
+	evaluations = []
+	T = 0
+	if args.load and os.path.isfile(os.path.join(args.output_dir, "step")):
+		T = policy.load(args.output_dir)
+		evaluations = np.load(os.path.join(args.output_dir, "reward.npy")).tolist()
+		for key, lst in metrics.items():
+			lst.extend(np.load(os.path.join(args.output_dir, key + ".npy"), allow_pickle=True).tolist())
+ 
 	replay_buffer = utils.ReplayBuffer(state_dim, action_dim)
 	replay_buffer.convert_D4RL(d4rl.qlearning_dataset(env))
 	if args.normalize:
@@ -114,11 +116,8 @@ if __name__ == "__main__":
 	else:
 		mean,std = 0,1
 	
-	evaluations = []
-	make_empty_dict = lambda: {'critic_loss': [], 'reconst_loss': [], 'kl_loss': [], 'latent': [], 'actor_loss': []}
-	metrics, epoch_metrics = make_empty_dict(), make_empty_dict()
 	pbar = tqdm(total=args.eval_freq, disable=args.no_tqdm)
-	for t in range(int(args.max_timesteps)):
+	for t in range(T, int(args.max_timesteps)):
 		batch_metrics = policy.train(replay_buffer, args.batch_size)
 		pbar.update(1)
 		for metric, value in batch_metrics.items():
@@ -127,6 +126,7 @@ if __name__ == "__main__":
 		if (t + 1) % args.eval_freq == 0:
 			pbar.close()
 			print(f"Time steps: {t+1}")
+			evaluations.append(eval_policy(policy, args.env, args.seed, t, mean, std))
 			for key, value in epoch_metrics.items(): 
 				value = [v.cpu().detach().numpy() for v in value]
 				if value[0].size == 1:
@@ -134,9 +134,9 @@ if __name__ == "__main__":
 					metrics[key].append(sum(value))
 				else:
 					metrics[key].append(np.concatenate(value, axis=0))
-				np.save(os.path.join(args.output_dir, key), metrics[key])
-			evaluations.append(eval_policy(policy, args.env, args.seed, t, mean, std))
+			for key, value in metrics.items():
+				np.save(os.path.join(args.output_dir, key), value)
 			np.save(os.path.join(args.output_dir, "reward"), evaluations)
-			if args.save_model: policy.save(f"./models/{file_name}")
+			if args.save: policy.save(args.output_dir, t)
 			epoch_metrics = make_empty_dict()
 			pbar = tqdm(total=args.eval_freq, disable=args.no_tqdm)

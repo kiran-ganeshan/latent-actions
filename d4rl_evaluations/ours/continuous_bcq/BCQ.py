@@ -1,4 +1,4 @@
-import copy
+import copy, os
 from torch.nn.modules.module import T
 from tqdm import tqdm
 import numpy as np
@@ -217,3 +217,30 @@ class BCQ(object):
 		#		   'actor_loss': total_actor_loss, 
 		#		   'vae_loss': total_vae_loss}, step=int(step))
 		return metrics
+
+	def save(self, filename, step):
+		torch.save(self.critic.state_dict(), os.path.join(filename, "critic"))
+		torch.save(self.critic_optimizer.state_dict(), os.path.join(filename, "critic_optimizer"))
+		
+		torch.save(self.vae.state_dict(), os.path.join(filename, "vae"))
+		torch.save(self.vae_optimizer.state_dict(), os.path.join(filename, "vae_optimizer"))
+
+		torch.save(self.encoder.state_dict(), os.path.join(filename, "encoder"))
+		torch.save(self.encoder_optimizer.state_dict(), os.path.join(filename, "encoder_optimizer"))
+
+		torch.save(step, os.path.join(filename, "step"))
+
+
+	def load(self, filename):
+		self.critic.load_state_dict(torch.load(os.path.join(filename, "critic")))
+		self.critic_optimizer.load_state_dict(torch.load(os.path.join(filename, "critic_optimizer")))
+		self.critic_target = copy.deepcopy(self.critic)
+
+		self.vae.load_state_dict(torch.load(os.path.join(filename, "vae")))
+		self.vae_optimizer.load_state_dict(torch.load(os.path.join(filename, "vae_optimizer")))
+
+		self.encoder.load_state_dict(torch.load(os.path.join(filename, "encoder")))
+		self.encoder_optimizer.load_state_dict(torch.load(os.path.join(filename, "encoder_optimizer")))
+
+		step = torch.load(os.path.join(filename, "step"))
+		return step
