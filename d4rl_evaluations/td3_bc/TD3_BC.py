@@ -1,4 +1,5 @@
 import copy
+import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -156,19 +157,24 @@ class TD3_BC(object):
 		return {'critic_loss': critic_loss, 'actor_loss': torch.tensor(0)}
 
 
-	def save(self, filename):
-		torch.save(self.critic.state_dict(), filename + "_critic")
-		torch.save(self.critic_optimizer.state_dict(), filename + "_critic_optimizer")
+	def save(self, filename, step):
+		torch.save(self.critic.state_dict(), os.path.join(filename, "critic"))
+		torch.save(self.critic_optimizer.state_dict(), os.path.join(filename, "critic_optimizer"))
 		
-		torch.save(self.actor.state_dict(), filename + "_actor")
-		torch.save(self.actor_optimizer.state_dict(), filename + "_actor_optimizer")
+		torch.save(self.actor.state_dict(), os.path.join(filename, "actor"))
+		torch.save(self.actor_optimizer.state_dict(), os.path.join(filename, "actor_optimizer"))
+
+		torch.save(step, os.path.join(filename, "step"))
 
 
 	def load(self, filename):
-		self.critic.load_state_dict(torch.load(filename + "_critic"))
-		self.critic_optimizer.load_state_dict(torch.load(filename + "_critic_optimizer"))
+		self.critic.load_state_dict(torch.load(os.path.join(filename, "critic")))
+		self.critic_optimizer.load_state_dict(torch.load(os.path.join(filename, "critic_optimizer")))
 		self.critic_target = copy.deepcopy(self.critic)
 
-		self.actor.load_state_dict(torch.load(filename + "_actor"))
-		self.actor_optimizer.load_state_dict(torch.load(filename + "_actor_optimizer"))
+		self.actor.load_state_dict(torch.load(os.path.join(filename, "actor")))
+		self.actor_optimizer.load_state_dict(torch.load(os.path.join(filename, "actor_optimizer")))
 		self.actor_target = copy.deepcopy(self.actor)
+
+		step = torch.load(os.path.join(filename, "step"))
+		return step + 1

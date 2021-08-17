@@ -103,7 +103,7 @@ if __name__ == "__main__":
 	metrics, epoch_metrics = make_empty_dict(), make_empty_dict()
 	evaluations = []
 	T = 0
-	if args.load:
+	if args.load and os.path.isfile(os.path.join(args.output_dir, "step")):
 		T = policy.load(args.output_dir)
 		evaluations = np.load(os.path.join(args.output_dir, "reward.npy")).tolist()
 		for key, lst in metrics.items():

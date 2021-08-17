@@ -43,12 +43,17 @@ def train_BCQ(env, state_dim, action_dim, max_action, device, output_dir, args):
     #replay_buffer.load(f"./buffers/{buffer_name}")
     
     evaluations = []
-    metrics = {'critic_loss': list(), 'critic_kl_loss': list(), 'bellman_loss': list(), 
-               'vae_loss': list(), 'vae_kl_loss': list(), 'reconst_loss': list(), 
-               'latent': list()}
     episode_num = 0
     done = True 
     training_iters = 0
+    metrics = {'critic_loss': [], 'critic_kl_loss': [], 'bellman_loss': [], 
+               'vae_loss': [], 'vae_kl_loss': [], 'reconst_loss': [], 
+               'latent': []}
+    if args.load and os.path.isfile(os.path.join(args.output_dir, "step")):
+        training_iters = policy.load(args.output_dir)
+        evaluations = np.load(os.path.join(args.output_dir, "reward.npy")).tolist()
+        for key, lst in metrics.items():
+            lst.extend(np.load(os.path.join(args.output_dir, key + ".npy"), allow_pickle=True).tolist())
     
     while training_iters < args.max_timesteps: 
             print('Train step:', training_iters, flush=True)
@@ -65,6 +70,7 @@ def train_BCQ(env, state_dim, action_dim, max_action, device, output_dir, args):
             np.save(os.path.join(output_dir, f"reward"), evaluations)
 
             training_iters += args.eval_freq
+            if args.save: policy.save(output_dir, training_iters)
             print(f"Training iterations: {training_iters}")
 
 

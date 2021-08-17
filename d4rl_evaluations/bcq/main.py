@@ -45,9 +45,13 @@ def train_BCQ(env, state_dim, action_dim, max_action, device, output_dir, args):
     episode_num = 0 
     done = True 
     training_iters = 0
-    
-    metrics = {'critic_loss': list(), 'vae_kl_loss': list(),
-               'vae_loss': list(), 'reconst_loss': list()}
+    metrics = {'critic_loss': [], 'vae_kl_loss': [],
+               'vae_loss': [], 'reconst_loss': []}
+    if args.load and os.path.isfile(os.path.join(args.output_dir, "step")):
+        training_iters = policy.load(args.output_dir)
+        evaluations = np.load(os.path.join(args.output_dir, "reward.npy")).tolist()
+        for key, lst in metrics.items():
+            lst.extend(np.load(os.path.join(args.output_dir, key + ".npy"), allow_pickle=True).tolist())
     
     while training_iters < args.max_timesteps: 
             print('Train step:', training_iters, flush=True)
@@ -56,14 +60,14 @@ def train_BCQ(env, state_dim, action_dim, max_action, device, output_dir, args):
                                          step=training_iters, 
                                          batch_size=args.batch_size,
                                          no_tqdm=args.no_tqdm)
+            evaluations.append(eval_policy(policy, args.env, args.seed, training_iters))
             for key, value in batch_metrics.items():
                 metrics[key].extend(value)
                 np.save(os.path.join(output_dir, key), metrics[key])
-
-            evaluations.append(eval_policy(policy, args.env, args.seed, training_iters))
             np.save(os.path.join(output_dir, f"reward"), evaluations)
-
+            
             training_iters += args.eval_freq
+            if args.save: policy.save(output_dir, training_iters)
             print(f"Training iterations: {training_iters}")
 
 
@@ -112,6 +116,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_samples", "-N", default=10)                      # Number of samples to take for target
     parser.add_argument("--output_dir", default="/output")
     parser.add_argument("--no_tqdm", action="store_true")
+    parser.add_argument("--save", action="store_true")
+    parser.add_argument("--load", action="store_true")
     args = parser.parse_args()
     d4rl.set_dataset_path('./datasets')
     print("---------------------------------------")	
