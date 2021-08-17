@@ -117,17 +117,17 @@ if __name__ == "__main__":
 	evaluations = []
 	make_empty_dict = lambda: {'critic_loss': [], 'actor_loss': []}
 	metrics, epoch_metrics = make_empty_dict(), make_empty_dict()
-	pbar = tqdm(total=args.eval_freq, disable=args.no_tqdm)
+	#pbar = tqdm(total=args.eval_freq, disable=args.no_tqdm)
 	for t in range(int(args.max_timesteps)):
 		batch_metrics = policy.train(replay_buffer, args.batch_size)
-		pbar.update(1)
+		#pbar.update(1)
 		for metric, value in batch_metrics.items():
 			epoch_metrics[metric].append(value)
 		# Evaluate episode
 		if (t + 1) % args.eval_freq == 0:
-			pbar.close()
-			print(f"Time steps: {t+1}")
+			print(f"Time steps: {t+1}", flush=True)
 			for key, value in epoch_metrics.items(): 
+				print(f"Processing {key}", flush=True)
 				value = [v.cpu().detach().numpy() for v in value]
 				if value[0].size == 1:
 					print(f"{key}: {sum(value)}")
@@ -139,4 +139,5 @@ if __name__ == "__main__":
 			np.save(os.path.join(args.output_dir, "reward"), evaluations)
 			if args.save_model: policy.save(f"./models/{file_name}")
 			epoch_metrics = make_empty_dict()
-			pbar = tqdm(total=args.eval_freq, disable=args.no_tqdm)
+			#pbar.close()
+			#pbar = tqdm(total=args.eval_freq, disable=args.no_tqdm)
