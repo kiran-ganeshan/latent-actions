@@ -8,6 +8,7 @@ import uuid
 import json
 import continuous_bcq.BCQ
 import continuous_bcq.utils as utils
+from google.cloud import storage
 
 # Trains BCQ offline
 def train_BCQ(env, state_dim, action_dim, max_action, device, output_dir, args):
